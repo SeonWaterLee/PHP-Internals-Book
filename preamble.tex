@@ -1,0 +1,81 @@
+\documentclass[UTF8]{ctexbook}                                           % Book class in 11 points  
+\usepackage{geometry}                                                    % Cus­tomize page lay­out
+\usepackage{xeCJK}
+\usepackage{hyperref}
+\usepackage{fontspec}
+\usepackage{xcolor}
+\usepackage{alertmessage}                                                 % Alert messages 
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{listings}
+
+\XeTeXlinebreaklocale "zh"                                                 % 针对中文进行断行
+\setmainfont{Times New Roman}  
+
+\geometry{
+    margin=1cm,
+    marginparsep = 0.5cm,
+    marginparwidth=1cm,
+    top = 2.5cm,
+    bottom = 2cm,
+    outer = 2.0cm,
+    inner = 2.0cm
+}                                                                           %设置页面
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    filecolor=magenta,      
+    urlcolor=blue,
+    pdftitle={PHP Internals Book},
+    pdfcreator={白水},
+    pdfauthor={白水},
+    pdfsubject={PHP Internals Book},
+    pdfkeywords={php,zend,extension},
+    bookmarks=true,
+}                                                                           % 设置目录、链接以及pdf信息
+                                           
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{custom_shell}{
+  backgroundcolor=\color{backcolour},   
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{magenta},
+  stringstyle=\color{codepurple},
+  basicstyle=\ttfamily,
+  escapechar=`,                                                             % 中文逃逸字符，用于中英混排
+  breakatwhitespace=false,      
+  breaklines=true,                 
+  captionpos=b,                    
+  keepspaces=true,                                   
+  numbersep=5pt,               
+  showspaces=false,                
+  showstringspaces=false,
+  showtabs=false,                  
+  tabsize=2
+}                                                                           % Code listing style named "default_style"
+
+
+\lstdefinelanguage{shell}{
+    morekeywords={git, php, cd, for, if, else, then, fi, echo, case, in,
+      elif, esac, for, do, done, tar, while, until, shift, configure,
+      mv, mkdir, ;;, \$\#, \$1, \$2},
+    sensitive=false,
+    keywordstyle=\bfseries,                                                 % 关键字高亮
+    morecomment=[l]{\#},
+    morecomment=[s]{/*}{*/},
+    morestring=[b]",
+    basicstyle=\ttfamily
+}
+
+\lstset{style=custom_shell}
+\parindent0pt                                                               % 段落缩进距离  
+\parskip10pt                                                                % 段落间的距离
+\raggedright                                                                % Do not right justify
+\pagestyle{fancy}                                                           % 页眉和页脚
+
+\newcommand{\keyword}[1]{\textbf{#1}}
+\newcommand{\code}[1]{\textit{#1}}

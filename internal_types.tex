@@ -1,0 +1,330 @@
+\chapter{内部类型}
+\section{Zvals}
+
+在本章中，我们将详细介绍PHP内部使用的特殊类型。其中一些类型直接绑定到用户层PHP，比如“zval”数据结构。其他结构/类型，如“zend\_string”，从用户角度来看并不是真的可见，但是要知道你是否计划从内部编写PHP是一个细节。
+
+\subsection{基本结构}
+
+zval（Zend value的缩写）表示任意的PHP值。因此，它可能是PHP所有结构中最重要的并且你将会经常使用它。本节介绍zval背后的基本概念及其用法。
+
+\subsubsection{类型和值}
+
+此外，每个zval都存储一些值以及该值的类型。这是有必要的，因为PHP是一种动态类型语言，而且变量的类型只能在运行时才会知道而不是在编译时。 此外，值类型可以在zval的生命周期内更改，因此如果zval先前存储了一个整数，那么在以后的某个时间点它可能包含一个字符串。
+
+用整数标签存储类型(unsigned int)。它可以是几个值之一。一些值与PHP中可用的八种类型相对应，其他值仅用于内部引擎。使用\keyword{IS\_TYPE}这种形式的常量引用这些值。例如,\keyword{IS\_NULL}对应于null类型和\keyword{IS\_STRING}对应于字符串类型。
+
+实际值存储在union中。union的定义如下:
+
+\begin{lstlisting}[language=c]
+ typedef union _zend_value {
+        zend_long         lval;
+        double            dval;
+        zend_refcounted  *counted;
+        zend_string      *str;
+        zend_array       *arr;
+        zend_object      *obj;
+        zend_resource    *res;
+        zend_reference   *ref;
+        zend_ast_ref     *ast;
+        zval             *zv;
+        void             *ptr;
+        zend_class_entry *ce;
+        zend_function    *func;
+        struct {
+            uint32_t w1;
+            uint32_t w2;
+        } ww;
+    } zend_value;
+\end{lstlisting}
+
+写给那些不熟悉联合体(union)概念的人：联合体定义了多个不同类型的成员，但是每次只能使用其中的一个成员。例如如果赋值\keyword{value.lval}成员后，那么访问这个值也是通过\keyword{value.lval}成员而不是其他成员（这样会违背"严格别名"保证并导致未定义行为）。原因是联合体将所以的成员值存储在相同的内存位置，并根据你访问的成员对该位置的值进行不同的解释。联合体的大小就是其最大成员的大小。
+
+在使用zvals时，类型标记用于查明当前联合体(union)的哪个成员正在使用。在查看一些相关API之前，让我们一起详细了解PHP支持的不同类型以及它们的存储方式:
+最简单的类型是\keyword{IS\_NULL}： 它实际上不需要存储任何值，因为它只是一个\keyword{null}值。
+
+为了存储数字PHP提供了\keyword{IS\_LONG}和\keyword{IS\_DOUBLE}类型，它们分别使用了\code{zend\_long lval}和\code{double dval}成员。前者用于存储整数，而后者存储浮点数。
+
+关于\keyword{zend\_long}类型需要注意一些事情:首先这是有符号整型类型，即它可以存储正整数和负整数，但通常不太适合做位操作。其次，\keyword{zend\_long}相当于平台long类型的抽象，所以无论你使用什么平台，\keyword{zend\_long}在32位平台上的为4字节，在64位平台上的为8字节。
+
+除此之外，你可以使用与long类型有关的宏，例如\keyword{SIZEOF\_ZEND\_LONG}或者\keyword{ZEND\_LONG\_MAX}。 有关更多信息，请参阅源代码中的\keyword{Zend/zend long.h}。
+
+用于存储浮点数的\keyword{double}类型(通常)是符合IEEE-754规范的8字节值。这里不会讨论这种格式的细节，但是你至少应该注意这样一个事实:这种类型的精度有限，通常不能存储你想要的确切值。
+
+布尔类型使用\keyword{IS\_TRUE}或者\keyword{IS\_FALSE}标记并且不需要存储任何其他信息。
+
+存在一种称为“伪类型”标记的\keyword{\_IS\_BOOL}类型，但是你不应该将其用作zval类型，这是不正确的。这种伪类型用于一些罕见的内部情况(例如提示类型)。
+
+其余四种类型只会在这里简述，后续会在他们自己的章节中进行更详细的讨论:
+
+字符串\keyword{IS\_STRING}存储在\keyword{zend\_string}结构中，即它们由\code{char *} 字符串和\keyword{size\_t}长度组成。您将在\href{http://www.phpinternalsbook.com/php7/internal_types/strings.html}{string}一章中找到关于\keyword{zend\_string}结构及其专用API的更多信息。
+
+数组使用\keyword{IS\_ARRAY}类型标记并存储在\keyword{zend\_array * arr}成员中。 \keyword{HashTable}结构的工作方式将在\href{http://www.phpinternalsbook.com/php7/internal_types/hashtables.html}{Hashtables}章节中讨论。
+
+对象(\keyword{IS\_OBJECT})使用\keyword{zend\_object *obj}成员。PHP的类和对象系统将在\href{http://www.phpinternalsbook.com/php7/internal_types/objects.html}{objects}一章中描述。
+
+资源(IS\_RESOURCE)是使用\code{zend\_resource *res}成员的特殊类型。资料在\href{http://www.phpinternalsbook.com/php7/internal_types/zend_resources.html}{Resources}
+章节中。
+
+综上所述，这是一个包含所有可用类型标记及其值的相应存储位置的表:
+
+\begin{tabular}{ | c | c | }
+\hline
+Type tag                     &	Storage location    \\
+\hline
+IS\_NULL	                 & none                 \\
+\hline
+IS\_TRUE or IS\_FALSE	     & none                 \\
+\hline
+IS\_LONG	                 & zend\_long lval     \\
+\hline
+IS\_DOUBLE                   & double dval         \\
+\hline
+IS\_STRING	                 & zend\_string *str   \\
+\hline
+IS\_ARRAY	                 & zend\_array *arr    \\
+\hline
+IS\_OBJECT	                 & zend\_object *obj   \\
+\hline
+IS\_RESOURCE	             & zend\_resource *res \\
+\hline
+\end{tabular}
+
+
+\subsubsection{特殊类型}
+
+你可能会看到zvals中的其他类型，我们还没有讨论的。这些类型是PHP语言用户区中不存在的特殊类型，仅用于内部实例的引擎。zval结构被认为是非常灵活的，并且在内部用于承载几乎任何类型的有关的数据，而不仅仅是我们上面刚刚讨论过的PHP特定类型。
+
+特殊的\keyword{IS\_UNDEF}类型有特殊的含义。这意味着“这个zval不包含相关的数据，不要从它访问任何数据字段”。这是用于\href{http://www.phpinternalsbook.com/php7/internal_types/zvals/memory_and_gc.html}{内存管理}的。如果您看到\keyword{IS\_UNDEF} zval，这意味着它没有特殊类型，也不包含有效信息。
+
+\code{zend\_refcounted * count}字段非常难以理解。基本上，该字段用作任何其他引用可计数类型的头。这部分我们将在\href{http://www.phpinternalsbook.com/php7/internal_types/zvals/memory_and_gc.html}{Zval内存管理和垃圾收集}章节详细介绍。
+
+当你从编译器操作AST时将使用\code{zend\_ast\_ref * ast}。 \href{http://www.phpinternalsbook.com/php7/zend_engine/zend_compiler.html}{Zend编译器}章节将详细介绍PHP编译。
+
+\code{zval * zv}仅在内部使用。你不应该操纵它。 它与\keyword{IS\_INDIRECT}一起使用，允许将\code{zval *}嵌入到\keyword{zval}中。这个字段特殊的隐藏用法是被用做表示\code{\$GLOBALS[] PHP}超全局变量。
+
+\code{void * ptr}字段非常有用。同样此字段在PHP用户空间不可使用，仅限内部。当您想要将“某些东西”存储到zval中时，您基本上会使用此字段。是的，这会是一个\code{void *}类型，在C中表示“指向任何大小的某个内存区域的指针，包含（希望）任何东西”。然后在zval中使用\keyword{IS\_PTR}标志类型。
+
+当您阅读\href{http://www.phpinternalsbook.com/php7/internal_types/objects.html}{对象}章节时，您将了解\keyword{zend\_class\_entry}类型。 \code{zval `zend\_class\_entry * ce}字段用于将对PHP类的引用转换为zval。同样，在PHP语言本身（userland）中没有直接使用这种情况，但在内部你需要它。
+
+最后\code{zend\_function * func}字段用于将PHP函数嵌入到zval中。\href{http://www.phpinternalsbook.com/php7/internal_types/functions.html}{函数}章节详细介绍了PHP函数。
+
+\subsubsection{访问宏}
+
+现在让我们看看zval结构实际上是什么样子的:
+
+\begin{lstlisting}[language=c]
+struct _zval_struct {
+        zend_value        value;                    /* value */
+        union {
+                struct {
+                        ZEND_ENDIAN_LOHI_4(
+                                zend_uchar    type,                 /* active type */
+                                zend_uchar    type_flags,
+                                zend_uchar    const_flags,
+                                zend_uchar    reserved)         /* call info for EX(This) */
+                } v;
+                uint32_t type_info;
+        } u1;
+        union {
+                uint32_t     next;                 /* hash collision chain */
+                uint32_t     cache_slot;           /* literal cache slot */
+                uint32_t     lineno;               /* line number (for ast nodes) */
+                uint32_t     num_args;             /* arguments number for EX(This) */
+                uint32_t     fe_pos;               /* foreach position */
+                uint32_t     fe_iter_idx;          /* foreach iterator index */
+                uint32_t     access_flags;         /* class constant access flags */
+                uint32_t     property_guard;       /* single property guard */
+                uint32_t     extra;                /* not further specified */
+        } u2;
+};
+\end{lstlisting}
+
+如上所述，zval存储着\keyword{value}和\keyword{type\_info}字段。value存储在上面讨论的union的 \keyword{zvalue\_value} 字段中，类型标记存储在\keyword{u1} union的zend\_uchar字段中。此外，该结构还有u2字段。我们暂时忽略它们，稍后再讨论它们的功能。通过\keyword{type\_info}访问\keyword{u1}。\keyword{type\_info}分为type、type\_flags、const\_flags和reservation字段。记住在\keyword{u1}联合体中，\keyword{u1.v}四个字段的值大小和存储在\keyword{u1.type\_info}中的值相同。这里使用了一个聪明的内存对齐规则。\keyword{u1}非常常用，因为它将关于存储在zval中的类型的信息嵌入其中。
+
+\keyword{u2}有完全不同的含义。我们现在不需要详细说明\keyword{u2}字段，你可以无视它，我们稍后再看。
+
+了解zval结构后，你现在可以编写使用它的代码：
+
+\begin{lstlisting}[language=c]
+zval zv_ptr = /* ... get zval from somewhere */;
+
+if (zv_ptr->type == IS_LONG) {
+    php_printf("Zval is a long with value %ld\n", zv_ptr->value.lval);
+} else /* ... handle other types */
+\end{lstlisting}
+
+\alerterror{此代码应该为php5的写法}
+
+虽然上面的代码有效，但这种写法不常用。它直接访问zval成员，而不是通过一组特殊的访问宏。
+
+\begin{lstlisting}[language=c]
+        zval *zv_ptr = /* ... */;
+
+        if (Z_TYPE_P(zv_ptr) == IS_LONG) {
+            php_printf("Zval is a long with value %ld\n", Z_LVAL_P(zv_ptr));
+        } else /* ... */        
+\end{lstlisting}
+
+上面的代码使用\keyword{Z\_TYPE\_P()}宏来检索类型标记，使用 \keyword{Z\_LVAL\_P()}宏来获取long(整型)的值。所有访问宏都有\keyword{\_P}后缀或根本没有后缀的变体。使用哪一个取决于您是使用\keyword{zval}还是\keyword{zval*}
+
+\begin{lstlisting}[language=c]
+        zval zv;
+        zval *zv_ptr;
+        zval **zv_ptr_ptr; /* very rare */
+        
+        Z_TYPE(zv);                 // = zv.type
+        Z_TYPE_P(zv_ptr);           // = zv_ptr->type        
+\end{lstlisting}
+
+\alerterror{此代码应该为php5的写法}
+
+\keyword{P}表示"pointer"指针的意思。这种只适用于\code{zval*}。没有特殊的宏来处理\code{zval**}或更多的的指针的指针，因为在实践中很少需要这样的宏(您只需要在使用\code{*}操作符解引用该值)。
+
+与\code{Z\_LVAL}类似，还有一些宏用于获取所有其他类型的值。为了演示它们的用法，我们将创建一个简单的函数来转储zval:
+
+\begin{lstlisting}[language=c]
+        PHP_FUNCTION(dump)
+        {
+            zval *zv_ptr;
+        
+            if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &zv_ptr) == FAILURE) {
+                return;
+            }
+        
+            switch (Z_TYPE_P(zv_ptr)) {
+                case IS_NULL:
+                    php_printf("NULL: null\n");
+                    break;
+                case IS_TRUE:
+                    php_printf("BOOL: true\n");
+                    break;
+                case IS_FALSE:
+                    php_printf("BOOL: false\n");
+                    break;
+                case IS_LONG:
+                    php_printf("LONG: %ld\n", Z_LVAL_P(zv_ptr));
+                    break;
+                case IS_DOUBLE:
+                    php_printf("DOUBLE: %g\n", Z_DVAL_P(zv_ptr));
+                    break;
+                case IS_STRING:
+                    php_printf("STRING: value=\"");
+                    PHPWRITE(Z_STRVAL_P(zv_ptr), Z_STRLEN_P(zv_ptr));
+                    php_printf("\", length=%zd\n", Z_STRLEN_P(zv_ptr));
+                    break;
+                case IS_RESOURCE:
+                    php_printf("RESOURCE: id=%d\n", Z_RES_HANDLE_P(zv_ptr));
+                    break;
+                case IS_ARRAY:
+                    php_printf("ARRAY: hashtable=%p\n", Z_ARRVAL_P(zv_ptr));
+                    break;
+                case IS_OBJECT:
+                    php_printf("OBJECT: object=%p\n", Z_OBJ_P(zv_ptr));
+                    break;
+            }
+        }
+        
+        const zend_function_entry funcs[] = {
+            PHP_FE(dump, NULL)
+            PHP_FE_END
+        };        
+\end{lstlisting}
+
+让我们试一试:
+
+\begin{lstlisting}[language=c]
+        dump(null);                 // NULL: null
+        dump(true);                 // BOOL: true
+        dump(false);                // BOOL: false
+        dump(42);                   // LONG: 42
+        dump(4.2);                  // DOUBLE: 4.2
+        dump("foo");                // STRING: value="foo", length=3
+        dump(fopen(__FILE__, "r")); // RESOURCE: id=???
+        dump(array(1, 2, 3));       // ARRAY: hashtable=0x???
+        dump(new stdClass);         // OBJECT: object=0x???        
+\end{lstlisting}
+
+访问值的宏非常简单：\keyword{Z\_LVAL}对应long类型，\keyword{Z\_DVAL}对应双精度double类型。 对于字符串，\keyword{Z\_STR}实际上返回\code{zend\_string *}类型字符串，\keyword{ZSTR\_VAL}返回\code{char *}类型字符串，
+而\keyword{Z\_STRLEN}可以获取其长度。 可以使用\keyword{Z\_RES\_HANDLE}获取资源ID，并使用\keyword{Z\_ARRVAL}访问数组的\code{zend\_array *}。
+
+当你想要访问zval内容时，你每次都应该通过这些宏，而不是直接访问其成员。这保持了一定程度的抽象，使意图更加清晰。使用宏可以在将来php版本中内部zval表示法更改时起保护作用。
+
+\subsubsection{赋值}
+
+上面介绍的大多数宏只是访问zval结构的某些成员，同样的你可以使用它们来读取和写入相应的值。 作为一个例子，考虑以下函数，它只返回字符串“hello world！”：
+
+\begin{lstlisting}[language=c]
+        PHP_FUNCTION(hello_world) {
+                Z_TYPE_P(return_value) = IS_STRING;
+                Z_STR_P(return_value) = zend_string_init("hello world!", strlen("hello world!"), 0);
+            };
+            
+            /* ... */
+                PHP_FE(hello_world, NULL)
+            /* ... */        
+\end{lstlisting}
+
+运行\code{php -r "echo hello\_world();"}将在终端输出\keyword{hello world!}。
+
+在上面的例子中，我们设置了\keyword{return\_value}变量，它是由\keyword{PHP\_FUNCTION}宏提供的\code{zval *}类型。下一章我们将更详细地讨论这个变量，现在只要知道这个变量的值就是函数的返回值就足够了。默认情况下，初始化为\keyword{IS\_NULL}类型。
+
+使用访问宏设置zval值非常简单，但是有一些事情需要记住:首先，你需要记住类型标记决定zval的类型。仅仅设置值是不够的(通过\code{Z\_STR\_P})，还需要设置类型标记。
+
+此外你需要知道在大多数情况下,zval“拥有”其值，并且zval的生命周期比你设置它的值的作用域更长。有时这在处理临时zvals时并不适用，但在大多数情况下是正确的。
+
+使用上面的例子，这意味着在我们离开函数体之后，\keyword{return\_value}将继续存在（这很明显，否则没有人可以使用返回值），因此它不能使用函数的任何临时值。
+
+因此我们需要使用\code{zend\_string\_init()}创建一个新的\code{zend\_string}。这将在堆上创建此字符串的单独副本。因为zval“承载”它的值，所以当zval被销毁时，它将被确保释放该副本或者减少引用计数。这也适用于zval的任何其他“复杂”值。例如，如果你为一个数组设置\code{zend\_array\*},zval以后将会"携带"它，并在zval销毁时释放它。对于释放的意思是，要么减少引用计数，要么当引用计数变为0时释放次结构。当使用像整型或者双精度基本类型时,显然不需要关心这些，因为它们总是被复制的。所有这些内存管理步骤，例如分配，释放或引用计数; 将在\href{http://www.phpinternalsbook.com/php7/internal_types/zvals/memory_and_gc.html}{memory\_and\_gc}章节详细介绍。
+
+zval赋值是一项非常常见的操作，PHP为此提供了另一组宏。它们允许你同时设置类型标记和值。使用这样的宏重新编写前面的示例会得到如下结果:
+
+\begin{lstlisting}[language=c]
+PHP_FUNCTION(hello_world) {
+    ZVAL_STRINGL(return_value, "hello world!", strlen("hello world!"));
+}
+\end{lstlisting}
+
+此外，我们不需要手工计算strlen，可以使用\code{ZVAL\_STRING}宏(末尾没有L):
+
+\begin{lstlisting}[language=c]
+PHP_FUNCTION(hello_world) {
+    ZVAL_STRING(return_value, "hello world!");
+}
+\end{lstlisting}
+
+如果您知道字符串的长度(因为它是以某种方式传递给你的)，那么你应该始终通过\code{ZVAL\_STRINGL}宏来使用它，以保持二进制安全。如果不知道长度(或者不知道字符串不包含NUL字节，就像通常的字面意思一样)，可以使用\code{ZVAL\_STRING}。
+
+除了\code{ZVAL\_STRING(L)}之外，还有一些用于设置值的宏，如下例所示:
+
+\begin{lstlisting}[language=c]
+ZVAL_NULL(return_value);
+
+ZVAL_FALSE(return_value);
+ZVAL_TRUE(return_value);
+
+ZVAL_LONG(return_value, 42);
+ZVAL_DOUBLE(return_value, 4.2);
+ZVAL_RES(return_value, zend_resource *);
+
+ZVAL_EMPTY_STRING(return_value);
+/* a special way to manage the "" empty string */
+
+ZVAL_STRING(return_value, "string");
+/* = ZVAL_NEW_STR(z, zend_string_init("string", strlen("string"), 0)); */
+
+ZVAL_STRINGL(return_value, "nul\0string", 10);
+/* = ZVAL_NEW_STR(z, zend_string_init("nul\0string", 10, 0)); */
+\end{lstlisting}
+
+
+请注意，这些宏将赋值，但不会销毁zval之前可能保留的任何值。 对于\code{return\_value} zval，这无关紧要，因为它已初始化为\code{IS\_NULL}（没有需要释放的值），但在其他情况下，您必须首先使用下一节中描述的函数销毁旧值。
+
+
+\clearpage
+\subsection{Zval内存管理和垃圾收集}
+
+
+\clearpage
+\subsection{zvals里的强制类型转换和操作}
+
+

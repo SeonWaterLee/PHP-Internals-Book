@@ -1,0 +1,729 @@
+\chapter{使用php构建系统}
+
+在本章中，我们将解释如何使用PHP构建系统来编译PHP本身及其扩展。本章还不会涉及编写您自己的autoconf构建指令，仅仅解释如何使用工具。
+
+\section{构建php}
+
+本章将说明如何在某种程度上适用于扩展开发或者内核修改的方式编译PHP。我们只包括基于类Unix系统的构建。
+
+如果您希望在Windows上构建PHP，您应该查看\href{https://wiki.php.net/internals/windows/stepbystepbuild}{PHP Wiki}中一步一步的构建说明[1]。
+
+本章还概述了PHP构建系统的工作原理以及它使用的工具，但详细说明超出了本书的范围。
+
+\alertinfo{[1] 免责声明:对于在Windows上编译PHP所造成的任何不良健康影响，我们不承担任何责任。}
+
+\subsection{为什么不使用包(packages) ?}
+
+如果你当前正在使用php，你可能会通过包管理安装，使用\code{sudo apt-get install php}命令。
+
+在解释实际编译前，你应当首先理解为什么自己编译是必要的并且不能仅仅使用预编译包。
+
+对此有几个原因：
+
+首先，预编译包只包含生成的二进制文件，但是省略了编译扩展所必需的其他内容，例如头文件。通过安装开发包（通常称为\keyword{php-dev}）可以很容易地解决上面这个问题。为了便于使用\keyword{valgrind}或\keyword{gdb}进行调试，可以另外安装调试符号，这通常是另一个称为 \keyword{php-dbg}的包。
+
+但是即使你安装了头文件和调试符号，你使用的仍然是PHP发布(release)版本。这意味着它将以高优化级别构建，这使得调试非常困难。此外，发布版本(release)不会生成有关内存泄漏或数据结构不一致的警告。 此外，预编译包不支持线程安全，这在开发过程中非常有用。
+
+另一个问题是，几乎所有发行版都会向PHP打其他补丁。在某些情况下，这些补丁仅包含与配置相关的微小更改，但某些发行版使用像Suhosin这样的高度侵入性补丁。已知其中一些补丁会引入与opcache等低级扩展的不兼容性。
+
+PHP仅提供对php.net上提供的软件的支持，而不对分发修改版本支持。如果您想报告错误，提交补丁或使用我们的帮助渠道进行扩展编写，您应该始终针对官方PHP版本。当我们在本书中讨论“PHP”时，我们总是指官方支持的版本。
+
+\subsection{获取源代码}
+
+在构建PHP之前，首先需要获取其源代码。有两种方法可以执行此操作：您可以从\href{http://www.php.net/downloads.php}{PHP的下载页面}下载存档文件，或者从\href{http://git.php.net/}{git.php.net}（或\href{http://www.github.com/php/php-src}{Github上的镜像}）克隆git仓库。
+
+对于这两种情况构建过程略有不同:通过git仓的库不捆绑configure脚本，因此您需要使用buildconf脚本生成它，该脚本使用autoconf工具生成。此外，git仓库的不包含预生成的解析器，因此还需要安装\keyword{bison}。
+
+我们建议您从git中签出源代码，因为这将为您提供一种简单的方法来更新您的安装并尝试使用不同版本的代码。如果要提交补丁或拉取PHP请求还需要git checkout。
+
+要克隆仓库,在shell中运行以下命令:
+
+\begin{lstlisting}[language=shell]
+~> git clone http://git.php.net/repository/php-src.git
+~> cd php-src
+# by default you will be on the master branch, which is the current
+# development version. You can check out a stable branch instead:
+~/php-src> git checkout PHP-7.0
+\end{lstlisting}
+
+如果你有关于git checkout的问题，请查看PHP wiki上的\href{https://wiki.php.net/vcs/gitfaq}{Git FAQ}。如果你想为PHP本身做贡献，Git FAQ还解释了如何设置git。此外，它包含有关为不同PHP版本设置多个工作目录的说明。如果您需要针对多个PHP版本和配置测试扩展或更改，这可能非常有用。
+
+在继续之前，您还应该使用包管理器安装一些基本的构建依赖项（默认情况下，您可能已经安装了前三个）：
+
+\begin{itemize}
+    \item gcc或者其他编译器套件
+    \item libc-dev，它提供了C标准库，包含头文件。
+    \item make，PHP使用的构建管理工具。
+    \item autoconf, 用于生成配置脚本。
+    \begin{itemize}
+        \item 2.59或者更高 (PHP 7.0-7.1)
+        \item 2.64或者更高 (PHP 7.2)
+        \item 2.68或者更高 (PHP 7.3)
+    \end{itemize}
+    \item libtool， 帮助管理共享库。
+    \item bison (2.4或者更高)，用于生成PHP解析器.
+    \item (可选) re2c, 用于生成PHP词法分析器。 由于git仓库里已经包含生成的词法分析器，因此如果您希望对其进行更改，则只需要re2c。
+\end{itemize}
+
+在Debian/Ubuntu服务器上，你可以通过以下命令安装这些软件：
+
+\begin{lstlisting}[language=shell]
+~/php-src> sudo apt-get install build-essential autoconf libtool bison re2c
+\end{lstlisting}
+
+根据您在./configure阶段启用的扩展，PHP将需要许多额外的库。 安装这些软件包时，请检查是否有以-dev或-devel结尾的软件包版本，并且安装它们。 没有dev的软件包通常不包含必要的头文件。 例如，默认的PHP构建将需要libxml，您可以通过libxml2-dev软件包安装它。
+
+
+如果你在使用Debian或者Ubuntu，你可以使用\code{sudo apt-get build-dep php7}来一次性安装大量可选的构建依赖项。如果您的目标仅仅是一个默认的构建，那么许多依赖包都是不必要的。
+
+\subsection{构建概述}
+
+在仔细研究各个构建步骤的作用之前，以下是为“默认”PHP构建执行所需的命令：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./buildconf     # `只有在构建从git获取的代码时才需要`
+~/php-src> ./configure
+~/php-src> make -jN
+\end{lstlisting}
+
+为了快速构建，请将N替换为您可用的CPU核数（\code{grep "cpu cores" /proc/cpuinfo}）。
+
+默认情况下PHP将要构建CLI和CGI SAPIS二进制文件，他们分别位于sapi/cli/php和sapi/cgi/php-cgi。验证以下是否编译成功，尝试运行`sapi/cli/php -v`命令。
+
+
+此外你可以运行\code{sudo make install}命令来将php安装到\keyword{/usr/local}目录。在配置阶段可以指定\keyword{--prefix}参数来更改目标目录。
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --prefix=$HOME/myphp
+~/php-src> make -jN
+~/php-src> make install
+\end{lstlisting}
+
+这里\$HOME/myphp是在\code{make install}步骤中使用的安装位置。请注意，这不是必需的，但是如果您想在扩展开发之外使用PHP构建，那么安装PHP是很方便的。
+
+现在让我们细细研究各个构建步骤!
+
+
+\subsection{./buildconf 脚本}
+
+如果你使用git仓库的代码构建，首先要做的事情是运行\keyword{./buildconf}脚本。这个脚本仅仅是调用\keyword{build/build.mk}这个makfile文件，而这个文件依次又调用了\keyword{build/build2.mk}文件。
+
+这些makefile文件的主要工作是运行\keyword{autoconf}来生成\keyword{./configure }脚本和运行\keyword{autoheader}来生成\keyword{main/php\_config.h.in}模版。后面生成的文件将被configure用来生成最终的配置头文件\keyword{main/php\_config.h}。
+
+两个实用程序都会从\keyword{configure.in}文件生成结果(指定大多数PHP构建过程)，\keyword{acinclude.m4}文件（它指定了大量特定于PHP的M4宏）和个别扩展的\keyword{config.m4}文件和SAPIS（以及其他一些m4文件）
+
+好消息是编写扩展甚至进行核心修改不需要与构建系统进行太多交互。稍后您将不得不编写小的\keyword{config.m4}文件，但这些文件通常只使用\keyword{acinclude.m4}提供的两个或三个高级宏。 因此，我们在此不再详述。
+
+\keyword{./buildconf}脚本仅仅只有两个选项: --debug在调用\keyword{autoconf}和\keyword{autoheader}时将会显示警报信息。除非你想在构建系统上工作，否则这个选项对你来说不太重要。
+
+第二个选项是\keyword{--force}, 允许在发版包（例如：如果您下载了打包(release)的源代码并希望生成一个新的\keyword{./configure}）运行\keyword{./buildconf}并清理配置缓存\keyword{config.cache}和\keyword{autom4te.cache}
+
+如果你使用\code{git pull}（或者一些其他命令）更新你的git仓库并在\keyword{make}步骤时报出奇怪的错误，这通常意味着构建配置发生了更改，您需要运行\code{./buildconf —force}。
+
+
+\subsection{./configure脚本}
+
+一旦\keyword{./configure}脚本生成，你就可以使用它来构建你自定义的php。你可以使用\keyword{--help}命令来列出其所支持的选项：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --help | less
+\end{lstlisting}
+
+帮助的第一部分将列出各种通用选项，所有基于autoconf的配置脚本都支持它们。其中一个是已经提及的\keyword{--prefix = DIR}，它改变了由\keyword{make install}使用的安装目录。另外一个有用的选项是\keyword{-C},它将各种测试的结果缓存在\keyword{config.cache}文件中并且加速后面\keyword{./configure}的调用。只有在您已经具有可用的构建并希望在不同配置之间快速切换之后，使用此选项才有意义。
+
+除了通用的autoconf选项之外，还有许多特定于PHP的设置。例如，您可以使用\keyword{--enable-NAME}和\keyword{--disable-NAME}开关来选择编译哪个扩展和SAPIs。
+如果扩展或SAPI具有外部依赖关系，则需要使用\keyword{--with-NAME}和\keyword{--without-NAME}代替。如果通过\keyword{NAME}所需的库不在默认位置（例如:因为您自己编译的），则可以使用\keyword{--with-NAME=DIR}为其指定位置。
+
+默认情况下PHP将构建CLI和CGI SAPIs，以及一些扩展。 您可以使用\keyword{-m}选项查看PHP二进制文件中包含的扩展名。对于默认的PHP7.0构建，结果如下：
+
+\begin{lstlisting}[language=shell]
+~/php-src> sapi/cli/php -m
+[PHP Modules]
+Core
+ctype
+date
+dom
+fileinfo
+filter
+hash
+iconv
+json
+libxml
+pcre
+PDO
+pdo_sqlite
+Phar
+posix
+Reflection
+session
+SimpleXML
+SPL
+sqlite3
+standard
+tokenizer
+xml
+xmlreader
+xmlwriter
+\end{lstlisting}
+
+如果您现在想要停止编译CGI SAPI，以及tokenizer和sqlite3扩展，而是启用opcache和gmp，相应的配置命令如下：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --disable-cgi --disable-tokenizer --without-sqlite3 \
+            --enable-opcache --with-gmp
+\end{lstlisting}
+
+默认情况下，大多数扩展将进行静态编译，也就是它们将成为生成的二进制文件的一部分。默认情况下，只有opcache扩展是共享的，也就是说它会在\keyword{modules/}目录下生成\keyword{opcache.so}共享对象。您可以通过编写\keyword{--enable-NAME=shared}或\keyword{--with-NAME=shared}（但并非所有的扩展支持这点）将其他扩展编译为共享对象。我们将在下一节讨论如何使用共享扩展。
+
+要了解您需要使用哪个开关以及扩展是否默认启用，请检查\code{./configure ——help}。如果开关是\keyword{--enable-NAME}或\keyword{--with-NAME}，这就意味着此扩展默认情况下没有编译，并且需要显式启用。另一方面\keyword{--disable-NAME}或者 \keyword{--without-NAME}表示扩展默认编译，但可以显式禁用。
+
+有些扩展总是被编译并且不能被禁用。要创建仅包含最少量扩展的构建，请使用\keyword{--disable-all}选项：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --disable-all && make -jN
+~/php-src> sapi/cli/php -m
+[PHP Modules]
+Core
+date
+pcre
+Reflection
+SPL
+standard
+\end{lstlisting}
+
+如果您想要一个快速的构建并且不需要太多功能（例如在实现语言更改时），则\keyword{--disable-all}选项非常有用。对于尽可能小的构建，您还可以额外指定\keyword{--disable-cgi}，这样就只生成CLI二进制文件。
+
+还有两个开关，在开发扩展或使用PHP时应始终指定：
+
+\keyword{--enable-debug}启用调试模式，它有多种效果:编译将使用\keyword{-g}来生成调试符号并使用最低的优化级别\keyword{-O0}。这将使得php运行慢很多，但使用gdb等工具进行调试更具可预测性。此外，调试模式定义了\keyword{ZEND\_DEBUG}宏，它将在引擎中启用各种调试助手。除其他外，内存泄漏以及某些数据结构的不正确使用也将被报告。
+
+\keyword{--enable-maintainer-zts}启用线程安全。此开关将定义\keyword{ZTS}宏，依次来启用PHP使用的整个TSRM（线程安全资源管理器）机制。为PHP编写线程安全扩展非常简单，但前提是确保启用此开关。如果您需要更多有关PHP线程安全和全局内存管理的信息，您应该阅读\href{http://www.phpinternalsbook.com/php7/extensions_design/globals_management.html}{全局管理章节}
+
+另一方面，如果要为代码执行性能基准测试，则不应使用这些选项中的任何一个，因为两者都会导致显着和不对称的减速。
+
+注意\keyword{--enable-debug}和\keyword{--enable-maintainer-zts}改变PHP二进制文件的ABI，例如：通过向许多函数添加额外的参数。因此，在调试模式下编译的共享扩展将与在发布模式下构建的PHP二进制文件不兼容。类似地，线程安全扩展（ZTS）与非线程安全的PHP构建（NTS）不兼容。
+
+由于ABI不兼容，\keyword{make install}（和PECL安装）会根据以下选项将共享扩展存放在不同的目录中：
+
+\$PREFIX/lib/php/extensions/no-debug-non-zts-API\_NO    非线程安全正式版本
+\$PREFIX/lib/php/extensions/debug-non-zts-API\_NO       非线程安全调试版本
+\$PREFIX/lib/php/extensions/no-debug-zts-API\_NO       线程安全正式版本
+\$PREFIX/lib/php/extensions/debug-zts-API\_NO          非线程安全调试版本
+
+上面的\keyword{API\_NO}占位符指的是\keyword{ZEND\_MODULE\_API\_NO}，它只是一个像20100525这样的日期，用于内部API版本控制。
+
+在大多数情况下，上面描述的配置开关应该足够了，但当然\keyword{./configure}提供了更多选项，您可以在帮助中找到这些选项。除了传递要配置的选项之外，您还可以指定许多环境变量。 在configure help（\code{./configure --help | tail -25}）的末尾记录了一些更重要的内容。
+
+例如您可以通过使用\keyword{CC}来使用不同的编译器和使用\keyword{CFLAGS}来更改使用的编译标志:
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --disable-all CC=clang CFLAGS="-O3 -march=native"
+\end{lstlisting}
+
+在此配置中，构建将使用clang(而不是gcc)并使用非常高的优化级别(\keyword{-O3 -march=native})。
+
+您可以使用其他编译器警告标志来帮助您发现一些错误。 对于GCC，您可以在\href{https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html#Warning-Options}{GCC手册}中阅读它们
+
+
+\subsection{make和make install}
+
+配置完所有内容后，您可以使用make来执行实际编译：
+
+\begin{lstlisting}[language=shell]
+~/php-src> make -jN    # where N is the number of cores
+\end{lstlisting}
+
+此操作的主要结果是生成启用SAPIs的PHP二进制文件（默认为\keyword{sapi/cli/php}和\keyword{sapi/cgi/php-cgi}),以及\keyword{modules/}目录中的共享扩展。
+
+现在你可以运行\keyword{make install}来将安装PHP到\keyword{/usr/local}(默认)或者你通过\keyword{--frefix} 配置指令指定的任何目录。
+
+
+\keyword{make install}只会将一些文件复制到新位置。除非你在配置时指定\keyword{--without-pear}，否则它通常还会下载并且安装PEAR。下面是默认PHP构建的结果树：
+
+\begin{lstlisting}
+> tree -L 3 -F ~/myphp
+
+/home/myuser/myphp
+|-- bin
+|   |-- pear*
+|   |-- peardev*
+|   |-- pecl*
+|   |-- phar -> /home/myuser/myphp/bin/phar.phar*
+|   |-- phar.phar*
+|   |-- php*
+|   |-- php-cgi*
+|   |-- php-config*
+|    -- phpize*
+|-- etc
+|   -- pear.conf
+|-- include
+|   -- php
+|       |-- ext/
+|       |-- include/
+|       |-- main/
+|       |-- sapi/
+|       |-- TSRM/
+|        -- Zend/
+|-- lib
+|   -- php
+|       |-- Archive/
+|       |-- build/
+|       |-- Console/
+|       |-- data/
+|       |-- doc/
+|       |-- OS/
+|       |-- PEAR/
+|       |-- PEAR5.php
+|       |-- pearcmd.php
+|       |-- PEAR.php
+|       |-- peclcmd.php
+|       |-- Structures/
+|       |-- System.php
+|       |-- test/
+|        -- XML/
+-- php
+    -- man
+        -- man1/
+\end{lstlisting}
+
+目录结构的简述：
+
+\begin{itemize}
+    \item \keyword{bin/}目录包含SAPI二进制文件(php和php-cgi),以及\keyword{phpize}和\keyword{php-config}脚本。它也是各种PEAR/PECL脚本的所在地。
+    \item \code{etc/}包含配置文件。注意默认的\keyword{php.ini}目录并不在这里。
+    \item \code{include/php}包含头文件，这些文件是构建其他扩展或在自定义软件中嵌入PHP所必需的。
+    \item \code{lib/php}包含PEAR文件。\keyword{lib/php/build}目录包含构建扩展所必须的文件,例如包含PHP的M4宏的\keyword{acinclude.m4}文件。如果我们已经编译了任何共享扩展，那么他们将存于\keyword{lib/php/extensions}的子目录中。
+    \item \code{php/man} 显然包含php命令的手册页。
+\end{itemize}
+
+如前所述，默认的\keyword{php.ini}并不在\keyword{etc/}目录下。您可以使用PHP的--ini选项来显示其位置：
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php --ini
+Configuration File (php.ini) Path: /home/myuser/myphp/lib
+Loaded Configuration File:         (none)
+Scan for additional .ini files in: (none)
+Additional .ini files parsed:      (none)
+\end{lstlisting}
+
+正如您所看到的默认php.ini目录是\keyword{\$PREFIX/lib}（libdir）而不是\keyword{\$PREFIX/etc}（sysconfdir）。您可以使用\keyword{--with-config-file-path=PATH} 选项调整默认的\keyword{php.ini}位置。
+
+另外要注意\code{make install}不会创建ini文件。如果您想使用\keyword{php.ini}文件，您需要自己创建一个。例如您可以复制默认的开发配置:
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> cp ~/php-src/php.ini-development ~/myphp/lib/php.ini
+~/myphp/bin> ./php --ini
+Configuration File (php.ini) Path: /home/myuser/myphp/lib
+Loaded Configuration File:         /home/myuser/myphp/lib/php.ini
+Scan for additional .ini files in: (none)
+Additional .ini files parsed:      (none)
+\end{lstlisting}
+
+\keyword{bin/}目录除了PHP二进制文件之外，还包含两个重要的脚本：\keyword{phpize}和\keyword{php-config}。
+
+\keyword{phpize}相当于\keyword{./buildconf}的扩展。它从\keyword{lib/php/build}复制各种文件并且调用\keyword{autoconf/autoheader}。您将在下一节中了解有关此工具的更多信息。
+
+\keyword{php-config} 提供构建PHP的配置信息。试一下：
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php-config
+Usage: ./php-config [OPTION]
+Options:
+  --prefix            [/home/myuser/myphp]
+  --includes          [-I/home/myuser/myphp/include/php -I/home/myuser/myphp/include/php/main -I/home/myuser/myphp/include/php/TSRM -I/home/myuser/myphp/include/php/Zend -I/home/myuser/myphp/include/php/ext -I/home/myuser/myphp/include/php/ext/date/lib]
+  --ldflags           [ -L/usr/lib/i386-linux-gnu]
+  --libs              [-lcrypt   -lresolv -lcrypt -lrt -lrt -lm -ldl -lnsl  -lxml2 -lxml2 -lxml2 -lcrypt -lxml2 -lxml2 -lxml2 -lcrypt ]
+  --extension-dir     [/home/myuser/myphp/lib/php/extensions/debug-zts-20100525]
+  --include-dir       [/home/myuser/myphp/include/php]
+  --man-dir           [/home/myuser/myphp/php/man]
+  --php-binary        [/home/myuser/myphp/bin/php]
+  --php-sapis         [ cli cgi]
+  --configure-options [--prefix=/home/myuser/myphp --enable-debug --enable-maintainer-zts]
+  --version           [5.4.16-dev]
+  --vernum            [50416]
+\end{lstlisting}
+
+这个脚本类似于linux发行版使用的pkg-config脚本。在扩展构建过程中通过它来获取编译器选项和路径信息。您还可以使用它快速获取有关您构建的信息，例如您的配置选项或默认扩展目录。这些信息也可以通过`./php -i`（phpinfo）提供，但php-config提供了更简单的形式（自动化工具很容易使用)）。
+
+
+\subsection{运行测试套件}
+
+如果\keyword{make}命令成功完成，它将打印一条消息鼓励您运行\keyword{make test}:
+
+\begin{lstlisting}[language=shell]
+Build complete.
+Don't forget to run 'make test'
+\end{lstlisting}
+
+\keyword{make test}将针对我们测试套件运行PHP CLI二进制文件，该测试文件在PHP源码树不同的`tests/`目录下。作为默认构建要针对大约9000个测试（对于最小的构建来说更少，如果启用其他扩展则更多），这可能要花费几分钟。\code{make test}当前不支持并行，因此指定-jN选项不会使其更快。
+
+如果这是你第一次在你的平台上编译PHP，我们鼓励你运行测试套件。根据你的系统和编译环境，你通过运行测试套件可能发现一些问题。如果有任何失败，运行脚本将会询问你是否是向我们的QA平台发送一份报告，这将允许贡献者来分析这些失败。请注意有少许测试失败这很正常并且只要你没有看到几十个失败，你的构建就可以正常运行。
+
+\keyword{make test}命令在内部使用CLI二进制文件调用run-tests.php文件。 您可以运行\code{sapi/cli/php run-tests.php --help}来显示此脚本接受的选项列表。
+
+如果手动运行\keyword{run-tests.php}，则需要指定\keyword{-p}或\keyword{-P}选项（或丑陋的环境变量）：
+
+\begin{lstlisting}[language=shell]
+~/php-src> sapi/cli/php run-tests.php -p `pwd`/sapi/cli/php
+~/php-src> sapi/cli/php run-tests.php -P
+\end{lstlisting}
+
+\keyword{-p}用于显式地指定要测试的二进制文件。注意，为了正确运行所有测试，这应该是一个绝对路径(或者独立于调用它的目录)。\keyword{-P}是一个快捷方式，它将使用\keyword{run-tests.php}调用的二进制文件。 在上面的例子中，两种方法都是相同的。
+
+你可以通过限定的某些目录作为参数传递给\keyword{run-tests.php}，而不是运行整个测试套件。例如只测试Zend引擎、反射扩展和数组函数：
+
+\begin{lstlisting}[language=shell]
+~/php-src> sapi/cli/php run-tests.php -P Zend/ ext/reflection/ ext/standard/tests/array/
+\end{lstlisting}
+
+这个非常有用，因为它允许你快速的运行只与你修改的那部分测试套件。
+
+你不需要显式地使用\keyword{run-tests.php}来传递选项或者限制目录。相反您可以使用\keyword{TESTS}变量通过\keyword{make test}传递其他参数。例如相当于前面的命令:
+\begin{lstlisting}[language=shell]
+~/php-src> make test TESTS="Zend/ ext/reflection/ ext/standard/tests/array/"
+\end{lstlisting}
+
+我们稍后将要更详细的看一下\keyword{run-tests.php}系统。特别是还要讨论如何编写自己的测试以及如何调试测试失败。 \href{http://www.phpinternalsbook.com/tests/introduction.html}{请参阅专用测试章节}。
+
+\subsection{修复编译问题并进行清理}
+
+正如您可能知道的，\keyword{make}执行增量构建,也就是说它不会重新编译所有文件，只编译自上次调用后更改的那些\keyword{.c}文件。这是缩短构建时间的好方法，但它并不总是有效:例如如果修改头文件中的结构，\keyword{make}将不会自动重新编译使用该头的所有\keyword{.c}文件，从而导致构建失败。
+
+如果在运行\keyword{make}时出现奇怪错误或者生成的二进制文件被破坏（例如如果`make test`在运行第一个测试之前崩溃了），则应该尝试运行\code{make clean}。 这将删除所有编译对象，从而强制执行下一次\keyword{make}调用以执行完整构建。
+
+有时在你更改\keyword{./configure}选项时通常需要运行\code{make clean}。如果只启用额外的扩展，增量构建应该是安全的，但是更改其他选项可能需要完全重新构建。
+
+一个更激进的清理目标通过\code{make distclean}是可使用的。这将执行一个常规清理，但也会回滚通过调用\keyword{./configure}命令生成的任何文件。它将删除配置缓存，Makefiles，配置头和各种其他文件。 顾名思义，这个目标是“为发行版进行清理”，因此它主要由发版管理者使用。
+
+编译问题的另一个来源是修改\keyword{config.m4}文件或者作为PHP构建系统一部分的其他文件。如果修改了此类文件，则必须重新运行\keyword{./buildconf}脚本。 如果您自己进行修改，您可能会记得运行该命令，但如果它作为\code{git pull}（或其他一些更新命令）的一部分发生，则问题可能不那么明显。
+
+如果你遇到任何奇怪的编译问题通过运行\code{make clean}没有得到解决，通过运行\code{./buildconf --force}很可能会解决你的问题。为避免以后输入之前的\keyword{./configure}选项，您可以使用\keyword{./config.nice}脚本（它包含了你上次的\keyword{./configure}调用）：
+
+\begin{lstlisting}[language=shell]
+~/php-src> make clean
+~/php-src> ./buildconf --force
+~/php-src> ./config.nice
+~/php-src> make -jN
+\end{lstlisting}
+
+PHP提供的最后一个清理脚本是\keyword{./vcsclean}, 这个仅适用你是通过git获取源码的情况下。它实际上就是对\code{git clean -X -f -d}的调用，它将删除git忽略的所有未跟踪的文件和目录。你应该小心使用这个。
+
+\section{构建PHP扩展}
+
+既然你已经知道了如何编译PHP自身，我们将要继续编译其他扩展。我们将要讨论构建过程是如何工作的以及有哪些不同的选项可用。
+
+\subsection{加载共享扩展}
+
+正如你在前一节中已经知道的，PHP扩展可以静态地构建到PHP二进制文件中，也可以编译成共享对象(`.so`)。绝大多数附带的扩展默认是静态链接,然而可以显式的传\keyword{--enable-EXTNAME=shared} 或者 \keyword{--with-EXTNAME=shared}到\keyword{./configure}来创建共享对象。
+
+虽然静态扩展总是可用，但是共享扩展则需要通过使用\keyword{extension}或者\keyword{zend\_extension} ini选项来加载。两个选项都采用要么是相对于\keyword{.so}文件的绝对路径或者是相对于\keyword{extension\_dir}的相对路径。
+
+例如：考虑使用此配置行来进行PHP的构建编译：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./configure --prefix=$HOME/myphp \
+                       --enable-debug --enable-maintainer-zts \
+                       --enable-opcache --with-gmp=shared
+\end{lstlisting}                   
+                     
+
+在这种情况下，opcache扩展和GMP扩展都被编译为位于 \keyword{modules/}目录中的共享对象。 您可以通过更改\keyword{extension\_dir}或通过传递绝对路径来加载它们：
+
+\begin{lstlisting}[language=shell]
+~/php-src> sapi/cli/php -dzend_extension=`pwd`/modules/opcache.so \
+                        -dextension=`pwd`/modules/gmp.so
+# or
+~/php-src> sapi/cli/php -dextension_dir=`pwd`/modules \
+                        -dzend_extension=opcache.so -dextension=gmp.so
+\end{lstlisting} 
+
+
+在\keyword{make install}这一步，两个\keyword{.so}文件将要被移动到你PHP安装时的extension目录，你可以使用\keyword{php-config --extension-dir}命令看查询此目录。对于上面的构建选项，它将是\keyword{/home/myuser/myphp/lib/php/extensions/no-debug-non-zts-MODULE\_API}。这个值也是 ini \keyword{`extension\_dir}选项的默认值，因此不必显式指定它，可以直接加载扩展:
+
+\begin{lstlisting}[language=shell]
+~/myphp> bin/php -dzend_extension=opcache.so -dextension=gmp.so                       
+\end{lstlisting}                      
+
+这就给我们留下了一个问题：你应该使用那种机制？共享对象允许你拥有一个基础的PHP二进制文件并且通过php.ini加载其他扩展。发行版利用了这一点，提供了一个简单的PHP包，并将扩展作为单独的包分发。另一方面，如果你正在编译自己的PHP二进制文件，则可能不需要这样做，因为你已经知道你需要哪些扩展。
+
+根据经验，您要对PHP本身附带的扩展使用静态链接并且对其他的扩展使用共享扩展。原因很简单，因为作为共享对象构建外部扩展更容易(或者至少不那么麻烦)，稍后您将看到这一点。另一个好处是你可以在不重新构建PHP的情况下更新扩展。
+
+\alertinfo{
+   如果你需要了解关于extensions 和 Zend extensions的区别内容，您可以查看\href{http://www.phpinternalsbook.com/php7/extensions_design/zend_extensions.html}{专门的章节}。
+}
+
+\subsection{通过PECL安装扩展}
+
+[PECL](http://pecl.php.net/)【PHP Extension Community Library】是PHP扩展社区库，为PHP提供了大量的扩展。当扩展被从主PHP发行版中删除时，它们通常继续存在于PECL中。同样，现在PHP附带的许多扩展以前都是PECL扩展。
+
+除非你在PHP构建的配置阶段指定\keyword{--without-pear}，否则\keyword{make install}将会下载并安装作为PEAR一部分的PECL。在\keyword{\$PREFIX/bin}目录下你将会发现\keyword{pecl}脚本。安装扩展现在就像运行\code{pecl install EXTNAME}一样简单，例如：
+
+\begin{lstlisting}[language=shell]
+~/myphp> bin/pecl install apcu
+\end{lstlisting}
+
+这个命令将会下载、编译和安装\href{http://pecl.php.net/package/APCu}{APCu}扩展。结果是在你的扩展目录下将会生成一个\keyword{apcu.so}文件，然后可以通过传递ini 选项 \keyword{extension=apcu.so}来加载该扩展。
+
+虽然\keyword{pecl install}对终端用户非常方便，但扩展开发人员对此不感兴趣。在下文中我们将描述两种手动构建扩展的方法：通过将扩展导入到PHP源代码树中（这允许静态链接）或者通过执行外部构建(仅共享)
+
+
+\subsection{向PHP源代码树添加扩展}
+
+第三方扩展和与PHP附带的扩展之间没有本质区别。因此只需将外部扩展复制到PHP源代码树中，然后使用常用的构建过程及可构建外部扩展。我们将以APCu为例进行演示。
+
+首先，你必须将扩展的源代码放入PHP源代码树的\keyword{ext/EXTNAME}目录中。如果扩展可以通过git获得，这就像从\keyword{ext/}目录下克隆仓库一样简单：
+
+\begin{lstlisting}[language=shell]
+~/php-src/ext> git clone https://github.com/krakjoe/apcu.git
+\end{lstlisting}
+
+或者你也可以下载源码包并解压它：
+\begin{lstlisting}[language=shell]
+/tmp> wget http://pecl.php.net/get/apcu-4.0.2.tgz
+/tmp> tar xzf apcu-4.0.2.tgz
+/tmp> mkdir ~/php-src/ext/apcu
+/tmp> cp -r apcu-4.0.2/. ~/php-src/ext/apcu
+\end{lstlisting}
+
+该扩展将包含一个\keyword{config.m4}文件，该文件指定了autoconf使用的特定于扩展的构建指令。要将它们合并到\keyword{./configure}脚本中，您必须再次运行\keyword{./buildconf}。 为了确保配置文件确实是重新生成的，建议提前删除它:
+
+\begin{lstlisting}[language=shell]
+~/php-src> rm configure && ./buildconf --force
+\end{lstlisting}
+
+您现在可以使用\keyword{./config.nice}脚本将APCu添加到现有配置中，或者使用全新的配置行重新开始：
+
+\begin{lstlisting}[language=shell]
+~/php-src> ./config.nice --enable-apcu
+# or
+~/php-src> ./configure --enable-apcu # --other-options
+\end{lstlisting}
+
+最后运行\keyword{make -jN}来执行实际构建。由于我们没有使用\keyword{——enable-apcu=shared},这个扩展被静态地链接到PHP二进制文件中。也就是说，使用它不需要额外的操作。显然，您还可以使用\keyword{make install}来安装生成的二进制文件。
+
+\subsection{使用phpize构建扩展}
+
+通过使用我们在构建PHP章节我们已经提到过的\keyword{phpize}脚本，也可以从PHP构建中分开构建扩展。
+
+\keyword{phpize}的作用类似于PHP构建中使用的\keyword{./buildconf}脚本:首先它要通过从\keyword{\$PREFIX/lib/php/build}复制文件导入PHP构建系统到你的扩展中。这些文件包括\keyword{acinclude.m4}（PHP的M4宏），\keyword{phpize.m4}（在你的扩展中将重命名为\keyword{configure.in}并包含主要构建指令）和\keyword{run-tests.php}。
+
+然后\keyword{phpize}将要调用\keyword{autoconf}生成一个\keyword{./configure}文件，该文件可用于自定义扩展构建。请注意，没有必要将\keyword{--enable-apcu}传递给它，因为这是隐含的假设。相反，您应该使用\keyword{--with-php-config}来指定\keyword{php-config}脚本的路径：
+
+\begin{lstlisting}[language=shell]
+/tmp/apcu-4.0.2> ~/myphp/bin/phpize
+Configuring for:
+PHP Api Version:         20121113
+Zend Module Api No:      20121113
+Zend Extension Api No:   220121113
+
+/tmp/apcu-4.0.2> ./configure --with-php-config=$HOME/myphp/bin/php-config
+/tmp/apcu-4.0.2> make -jN && make install
+\end{lstlisting}
+
+在构建扩展时，你应始终指定\keyword{--with-php-config}选项（除非你只有一个全局安装的PHP），否则\keyword{./configure}将无法正确确定要构建的PHP版本和标志。指定\keyword{php-config}脚本还可以确保\keyword{make install}将生成的\keyword{.so}文件(可以在\keyword{modules/}目录中找到)移动到正确的扩展目录。
+
+由于\keyword{run-tests.php}文件在\keyword{phpize}阶段也被复制，你可以使用\keyword{make test}（或直接调用\keyword{run-tests}）来运行扩展测试。
+
+如果在更改后的增量构建失败，以删除编译对象为目标的\keyword{make clean}也是可用的并允许你强制完全重新构建扩展。另外\keyword{phpize}也提供了清理选项\keyword{phpize --clean}。这将删除\keyword{phpize}导入的所有文件，以及\keyword{/configure}脚本生成的文件。
+
+\subsection{展示扩展信息}
+
+PHP CLI提供了几个选项用来显示扩展的有关信息。 你已经知道了\keyword{-m}，它将列出所有加载的扩展。 你可以使用它来验证扩展是否已正确加载：
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php -dextension=apcu.so -m | grep apcu
+apcu
+\end{lstlisting}
+
+还有几个以\keyword{-r}开头的开关，它们引入了反射功能。 例如，您可以使用\keyword{——ri}来显示扩展的配置:
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php -dextension=apcu.so --ri apcu
+apcu
+
+APCu Support => disabled
+Version => 4.0.2
+APCu Debugging => Disabled
+MMAP Support => Enabled
+MMAP File Mask =>
+Serialization Support => broken
+Revision => $Revision: 328290 $
+Build Date => Jan  1 2014 16:40:00
+
+Directive => Local Value => Master Value
+apc.enabled => On => On
+apc.shm_segments => 1 => 1
+apc.shm_size => 32M => 32M
+apc.entries_hint => 4096 => 4096
+apc.gc_ttl => 3600 => 3600
+apc.ttl => 0 => 0
+# ...
+\end{lstlisting}
+
+\keyword{--re}开关列出了扩展添加的所有ini设置，常量，函数和类：
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php -dextension=apcu.so --re apcu
+Extension [ <persistent> extension #27 apcu version 4.0.2 ] {
+  - INI {
+    Entry [ apc.enabled <SYSTEM> ]
+      Current = '1'
+    }
+    Entry [ apc.shm_segments <SYSTEM> ]
+      Current = '1'
+    }
+    # ...
+  }
+
+  - Constants [1] {
+    Constant [ boolean APCU_APC_FULL_BC ] { 1 }
+  }
+
+  - Functions {
+    Function [ <internal:apcu> function apcu_cache_info ] {
+
+      - Parameters [2] {
+        Parameter #0 [ <optional> $type ]
+        Parameter #1 [ <optional> $limited ]
+      }
+    }
+    # ...
+  }
+}
+\end{lstlisting}
+
+\keyword{--re}{开关仅适用于普通扩展，Zend扩展使用\keyword{--rz}代替。 你可以在opcache上试试这个：
+
+\begin{lstlisting}[language=shell]
+~/myphp/bin> ./php -dzend_extension=opcache.so --rz "Zend OPcache"
+Zend Extension [ Zend OPcache 7.0.3-dev Copyright (c) 1999-2013 by Zend Technologies <http://www.zend.com/> ]
+\end{lstlisting}
+
+正如你所看到的，这不会显示任何有用的信息。原因是opcache注册了普通扩展和Zend扩展，前者包含所有ini设置、常量和函数。因此，在这种特殊情况下，您仍然需要使用\keyword{--re}。 其他Zend扩展通过\keyword{--rz}提供其信息。
+
+
+\subsection{扩展API兼容性}
+
+扩展对5个主要因素非常敏感。 如果它们不合适，扩展将不会加载到PHP中并且将无用：
+
+\begin{itemize}
+    \item PHP Api Version
+    \item Zend Module Api No
+    \item Zend Extension Api No
+    \item Debug mode
+    \item Thread safety
+\end{itemize}
+
+\keyword{phpize}工具会让你回想起其中的一些信息。因此如果你已经构建的PHP带有调试模式，并且尝试加载并使用一个不带调试模式构建的扩展，这根本行不通。其他检查也是如此。
+
+PHP Api Version是内部API的版本号。Zend Module Api No和Zend Extension Api No分别是PHP扩展和Zend扩展API的。
+
+这些编号稍后作为C宏传递给正在构建的扩展，因此它本身可以检查这些参数并根据C预处理器\keyword{\#ifdef}采用不同的代码路径。当这些编号作为宏传递给扩展代码时，它们被编写在扩展结构中，所以任何时候只要你尝试在PHP二进制文件中加载此扩展，都将根据PHP二进制文件本身的编号进行检查。如果它们不匹配，则不会加载扩展，并显示一条错误消息。
+
+如果我们看一下扩展C结构，它看起来像这样：
+
+\begin{lstlisting}[language=c]
+zend_module_entry foo_module_entry = {
+    STANDARD_MODULE_HEADER,
+    "foo",
+    foo_functions,
+    PHP_MINIT(foo),
+    PHP_MSHUTDOWN(foo),
+    NULL,
+    NULL,
+    PHP_MINFO(foo),
+    PHP_FOO_VERSION,
+    STANDARD_MODULE_PROPERTIES
+};
+\end{lstlisting}
+
+到目前为止我们感兴趣的是\keyword{STANDARD\_MODULE\_HEADER}宏。如果我们展开它，我们可以看到:
+
+\begin{lstlisting}[language=c]
+#define STANDARD_MODULE_HEADER_EX sizeof(zend_module_entry), ZEND_MODULE_API_NO, ZEND_DEBUG, USING_ZTS
+#define STANDARD_MODULE_HEADER STANDARD_MODULE_HEADER_EX, NULL, NULL
+\end{lstlisting}
+
+注意\keyword{ZEND\_MODULE\_API\_NO}和\keyword{ZEND\_DEBUG、USING\_ZTS}是如何使用的。
+
+如果你查看PHP扩展的默认目录，它应该看起来想\keyword{no-debug-non-zts-20090626}。正如你所猜测的，此目录由不同的部分连接在一起组成的：调试模式，下一项是线程安全信息，然后是Zend Module Api No。因此默认情况下，PHP试图帮助你使用扩展进行导航。
+
+\alertinfo{
+通常当你成为内核开发人员或者扩展开发人员时，你就不得不使用调试参数，并且如果必须处理Windows平台，则线程也会出现。你可以根据这些参数的一些情况多次编译相同的扩展。
+}
+
+请记住PHP的每个新主/次版本都会更改参数，例如PHP Api版本，这就是为什么需要针对新的PHP版本重新编译扩展。
+
+\begin{lstlisting}[language=shell]
+> /path/to/php70/bin/phpize -v
+Configuring for:
+PHP Api Version:         20151012
+Zend Module Api No:      20151012
+Zend Extension Api No:   320151012
+
+> /path/to/php71/bin/phpize -v
+Configuring for:
+PHP Api Version:         20160303
+Zend Module Api No:      20160303
+Zend Extension Api No:   320160303
+
+> /path/to/php56/bin/phpize -v
+Configuring for:
+PHP Api Version:         20131106
+Zend Module Api No:      20131226
+Zend Extension Api No:   220131226
+\end{lstlisting}
+
+\alertinfo{
+Zend Module Api No 本身使用年.月.日的日期格式构建。这是API更改并打标签的日期。Zend Extension Api No 是Zend版本，随后是Zend Module Api No.
+}
+
+\alertinfo{
+ 编号太多了吗? 是的。一个API号绑定到一个PHP版本，对于任何人来说都足够了，并且可以简化对PHP版本控制的理解。不幸的是，除了PHP版本之外，我们还得到了3个不同的API号。你应该找哪一个? 答案是任何一个:当PHP版本发展时，它们三个都在发展。由于历史原因，我们得到了3个不同的编号。
+}
+
+但是，你是C开发人员，不是吗？为什么不根据这些编号建立一个“兼容性”的头？我们作者，在我们的扩展中使用这样的东西：
+
+\begin{lstlisting}[language=c]
+#include "php.h"
+#include "Zend/zend_extensions.h"
+
+#define PHP_5_5_X_API_NO            220121212
+#define PHP_5_6_X_API_NO            220131226
+
+#define PHP_7_0_X_API_NO            320151012
+#define PHP_7_1_X_API_NO            320160303
+#define PHP_7_2_X_API_NO            320160731
+
+#define IS_PHP_72          ZEND_EXTENSION_API_NO == PHP_7_2_X_API_NO
+#define IS_AT_LEAST_PHP_72 ZEND_EXTENSION_API_NO >= PHP_7_2_X_API_NO
+
+#define IS_PHP_71          ZEND_EXTENSION_API_NO == PHP_7_1_X_API_NO
+#define IS_AT_LEAST_PHP_71 ZEND_EXTENSION_API_NO >= PHP_7_1_X_API_NO
+
+#define IS_PHP_70          ZEND_EXTENSION_API_NO == PHP_7_0_X_API_NO
+#define IS_AT_LEAST_PHP_70 ZEND_EXTENSION_API_NO >= PHP_7_0_X_API_NO
+
+#define IS_PHP_56          ZEND_EXTENSION_API_NO == PHP_5_6_X_API_NO
+#define IS_AT_LEAST_PHP_56 (ZEND_EXTENSION_API_NO >= PHP_5_6_X_API_NO && ZEND_EXTENSION_API_NO < PHP_7_0_X_API_NO)
+
+#define IS_PHP_55          ZEND_EXTENSION_API_NO == PHP_5_5_X_API_NO
+#define IS_AT_LEAST_PHP_55 (ZEND_EXTENSION_API_NO >= PHP_5_5_X_API_NO && ZEND_EXTENSION_API_NO < PHP_7_0_X_API_NO)
+
+#if ZEND_EXTENSION_API_NO >= PHP_7_0_X_API_NO
+#define IS_PHP_7 1
+#define IS_PHP_5 0
+#else
+#define IS_PHP_7 0
+#define IS_PHP_5 1
+#endif
+\end{lstlisting}
+
+看到了吗?
+
+或者，更简单(更好)的方法是使用你可能更熟悉的PHP\_VERSION\_ID:
+
+\begin{lstlisting}[language=c]
+#if PHP_VERSION_ID >= 50600
+\end{lstlisting}
+
