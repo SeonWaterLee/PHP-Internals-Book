@@ -36,7 +36,7 @@ struct hack一定要记住，因为内存布局看起来像C字符位于C \code{
 
 \includegraphics{images/zend_string_memory_layout.png} 
 
-\subsection{使用\code{zend\_string}API}
+\subsection{使用\code{zend\_string} API}
 
 \subsubsection{简单实例}
 
@@ -53,5 +53,43 @@ zend_string_release(str);
 \end{lstlisting}
 
 上面的简单示例展示了基本的字符串管理。
+
+\code{zend\_string\_init()}函数(它实际上是宏，但是让我们传入这些细节)应当传入完整\code{char *}型C字符串及其长度。最后一个参数(类型为int)值应该是0或1。如果传0，则要求引擎使用Zend内存管理器使用请求绑定堆分配。这种分配将在当前请求结束时销毁。如果您不这样做，在调试构建时，引擎将会对您刚刚创建的发出内存泄漏的警告。如果传1，您将请求我们所说的“持久”分配，即引擎将调用传统的C \code{malloc()}方法，并且不会以任何方式跟踪内存分配。
+
+\alertinfo{如果您想了解有关内存管理的更多信息，可以阅读\href{http://www.phpinternalsbook.com/php7/memory_management.html}{专门章节}。}
+
+然后，我们输出字符串。 我们使用\code{ZSTR\_VAL()}宏访问字符数组。\code{ZSTR\_LEN()}获取长度信息。 \code{zend\_string}相关的宏都以\code{ZSTR\_**()}开头，请注意这与\code{Z\_STR**()}宏不同。
+
+\alertinfo{长度使用\code{size\_t}类型存储。因此为了输出它\code{printf()}需要使用"\%zd"。您应该始终使用正确的\code{printf()}格式。如果不这样做可能会导致应用程序崩溃或产生安全问题。有关printf()格式的精彩回忆，请访问\href{http://www.cplusplus.com/reference/cstdio/printf/}{此链接}}
+
+最后，我们使用\code{zend\_string\_release()}释放字符串。这个"释放"是强制性的。这是关于内存管理的。“释放”是一个简单的操作：减少字符串的引用计数器，如果它变为0，API将为你释放字符串。如果忘记释放字符串，很可能会造成内存泄漏。
+
+\alertinfo{您必须始终考虑C语言中的内存管理。如果您分配内存-无论是直接使用\code{malloc()}，还是使用API来完成，你必须在某个时刻进行\code{free()}。如果不这样做会造成内存泄露并会变成没有人能够安全使用的设计糟糕的程序}
+
+\subsubsection{使用hash}
+
+如果需要访问hash值，请使用\code{ZSTR\_H()}。但是，创建\code{zend\_string}时不会自动计算哈希值。但是当使用HashTable API操作字符串时，它将会完成计算。如果你想强制立即计算hash值，可以使用\code{ZSTR\_HASH()}或者\code{zend\_string\_hash\_val()}。一旦计算出hash值，它将会被保存并且不会再次被计算。如果处于某种原因，您需要重新计算它 - 例如：因为你更改了字符串的值 - 使用\code{zend\_string\_forget\_hash\_val()}:
+
+
+
+\begin{lstlisting}[language=c]
+        zend_string *str;
+
+        str = zend_string_init("foo", strlen("foo"), 0);
+        php_printf("This is my string: %s\n", ZSTR_VAL(str));
+        php_printf("It is %zd char long\n", ZSTR_LEN(str));
+        
+        zend_string_hash_val(str);
+        php_printf("The string hash is %lu\n", ZSTR_H(str));
+        
+        zend_string_forget_hash_val(str);
+        php_printf("The string hash is now cleared back to 0!");
+        
+        zend_string_release(str);
+\end{lstlisting}
+
+
+\subsubsection{字符串复制及内存管理}
+
 
 
