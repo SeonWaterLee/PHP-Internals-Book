@@ -7,6 +7,7 @@
 因此，PHP在C字符串之上设计了一个层:\keyword{zend\_strings}。另外还存在另一个API，它实现了C经典字符串或\keyword{zend\_strings}常见的字符串操作: \keyword{smart\_str} API。
 
 \section{字符串管理:zend\_string}
+\label{sec:zend_string}
 
 它增加了内存管理功能，以便相同字符串可以在多个地方共享，而不需要复制它。另外一些字符串被“扣押”，即它们被“持久”分配并由内存管理器专门管理，因此它们不会在多个请求中被销毁。 这些内存稍后将从\href{http://www.phpinternalsbook.com/php7/memory_management/zend_memory_manager.html}{Zend内存管理器}获得永久分配。
 
@@ -40,7 +41,7 @@ struct hack一定要记住，因为内存布局看起来像C字符位于C \code{
 
 \subsubsection{简单实例}
 
-与\keyword{Zvals}一样，您不要手工操作\code{zend\_string}内部字段，而是始终要使用宏。还有一些宏可以触发字符串上的操作。这些不是函数，而是宏，都存储在所需的\href{https://github.com/php/php-src/blob/PHP-7.0/Zend/zend_string.h}{Zend/zend\_string.h }头:
+与\keyword{Zvals}一样，您不要手工操作\code{zend\_string}内部字段，而是始终要使用宏。还有一些宏可以触发字符串上的操作。这些不是函数，而是宏，都存储在所需的\href{https://github.com/php/php-src/blob/PHP-7.0/Zend/zend_string.h}{Zend/zend\_string.h}头:
 
 \begin{lstlisting}[language=c]
 zend_string *str;
@@ -90,6 +91,279 @@ zend_string_release(str);
 
 
 \subsubsection{字符串复制及内存管理}
+
+\code{zend\_string} API的一个非常好的特性是它允许一部分通过简单地声明对它的兴趣来“拥有”一个字符串。 然后引擎不会在内存中复制字符串，而只是递增其引用计数（作为其\code{zend\_refcounted\_h}的一部分）。这就在代码中实现了内存共享。
+
+那样的话，当我们说“复制”（copying）\code{zend\_string}时，事实上，我们不会在内存中复制任何东西。如果需要 - 这仍然是一个可能的操作 - 我们然后讨论“复制”（duplicating）字符串。 我们开始吧：
+
+\begin{lstlisting}[language=c]
+
+        zend_string *foo, *bar, *bar2, *baz;
+
+        foo = zend_string_init("foo", strlen("foo"), 0); /* creates the "foo" string in foo */
+        bar = zend_string_init("bar", strlen("bar"), 0); /* creates the "bar" string in bar */
+
+        /* creates bar2 and shares the "bar" string from bar into bar2. Also increments the refcount of the "bar" string to 2 */
+        bar2 = zend_string_copy(bar);
+
+        php_printf("We just copied two strings\n");
+        php_printf("See : bar content : %s, bar2 content : %s\n", ZSTR_VAL(bar), ZSTR_VAL(bar2));
+
+        /* Duplicate in memory the "bar" string, create the baz variable and make it solo owner of the newly created "bar" string */
+        baz = zend_string_dup(bar, 0);
+
+        php_printf("We just duplicated 'bar' in 'baz'\n");
+        php_printf("Now we are free to change 'baz' without fearing to change 'bar'\n");
+
+        /* Change the last char of the second "bar" string turning it to "baz" */
+        ZSTR_VAL(baz)[ZSTR_LEN(baz) - 1] = 'z';
+
+        /* Forget the old hash (if computed) as now the string changed, thus its hash must also change and get recomputed */
+        zend_string_forget_hash_val(baz);
+
+        php_printf("'baz' content is now %s\n", ZSTR_VAL(baz));
+
+        zend_string_release(foo);  /* destroys (frees) the "foo" string */
+        zend_string_release(bar);  /* decrements the refcount of the "bar" string to one */
+        zend_string_release(bar2); /* destroys (frees) the "bar" string both in bar and bar2 vars */
+        zend_string_release(baz);  /* destroys (frees) the "baz" string */
+        
+\end{lstlisting}    
+
+我从分配"foo"和"bar“开始。然后我们创建了作为\code{bar}副本的\code{bar2}字符串。在这里，我们要知道：\code{bar}和\code{bar2}在内存中指向相同的C字符串，修改其中一个字符串就会改变第二个。这就是\code{zend\_string\_copy()}的行为:它只增加所拥有的C字符串的refcount值。
+
+如果我们想分开这两个字符串 - 即我们希望那个字符串在内存中有两个不同的副本 - 我们需要使用\code{zend\_string\_dup()}复制。然后我们将bar2变量的字符串复制到baz变量中。现在，baz变量嵌入了自己的字符串副本，并且可以在不影响bar2的情况下更改它。这就是我们所做的:我们将bar中的最后一个r用z替换为baz。然后我们打印他们，并释放每个字符串的内存。
+
+请注意我们忘记了hash值（我们如果之前计算过它，则无需考虑该细节）。这是一个值得记住的好习惯。如前所述，如果\code{zend\_string}被用做HashTables的一部分，hash则被使用了。这在开发中是非常常见的操作，更改字符串值也需要重新计算hash值。忘记这一步将导致可能花费一些时间来跟踪的bug。
+
+\subsubsection{字符串操作}
+
+\code{zend\_string} API允许其他操作，例如扩展或缩小字符串，更改其大小写或比较。目前还没有可用的联合操作，但这很容易执行：
+
+\begin{lstlisting}[language=c]
+        zend_string *FOO, *bar, *foobar, *foo_lc;
+
+        FOO = zend_string_init("FOO", strlen("FOO"), 0);
+        bar = zend_string_init("bar", strlen("bar"), 0);
+        
+        /* Compares a zend_string against a C string literal */
+        if (!zend_string_equals_literal(FOO, "foobar")) {
+            foobar = zend_string_copy(FOO);
+        
+            /* reallocates the C string to a larger buffer */
+            foobar = zend_string_extend(foobar, strlen("foobar"), 0);
+        
+            /* concatenates "bar" after the newly reallocated large enough "FOO" */
+            memcpy(ZSTR_VAL(foobar) + ZSTR_LEN(FOO), ZSTR_VAL(bar), ZSTR_LEN(bar));
+        }
+        
+        php_printf("This is my new string: %s\n", ZSTR_VAL(foobar));
+        
+        /* Compares two zend_string together */
+        if (!zend_string_equals(FOO, foobar)) {
+            /* duplicates a string and lowers it */
+            foo_lc = zend_string_tolower(foo);
+        }
+        
+        php_printf("This is FOO in lower-case: %s\n", ZSTR_VAL(foo_lc));
+        
+        /* frees memory */
+        zend_string_release(FOO);
+        zend_string_release(bar);
+        zend_string_release(foobar);
+        zend_string_release(foo_lc);
+\end{lstlisting}  
+
+\subsubsection{使用zvals访问zend\_string}
+
+既然您已经知道如何管理和操作\code{zend\_string}，那么让我们看看它们与zval容器之间的交互。
+
+注意：
+你需要熟悉zvals，如果不熟悉，请阅读:zvals一章。
+这些宏允许您将\code{zend\_string}存储到zval中，或者从zval读取\code{zend\_string}：
+
+\begin{lstlisting}[language=c]
+        zval myval;
+        zend_string *hello, *world;
+
+        zend_string_init(hello, "hello", strlen("hello"), 0);
+
+        /* Stores the string into the zval */
+        ZVAL_STR(&myval, hello);
+
+        /* Reads the C string, from the zend_string from the zval */
+        php_printf("The string is %s", Z_STRVAL(myval));
+
+        zend_string_init(world, "world", strlen("world"), 0);
+
+        /* Changes the zend_string into myval : replaces it by another one */
+        Z_STR(myval) = world;
+
+/* ... */
+\end{lstlisting} 
+
+您必须记住的是，以\code{ZSTR\_***(s)}开头的每个宏都将作用于\code{zend\_string}。
+
+\begin{itemize}
+    \item ZSTR\_VAL()
+    \item ZSTR\_LEN()
+    \item ZSTR\_HASH()
+    \item ...
+\end{itemize}
+
+以\code{Z\_STR**(z)}开头的每个宏都将作用于嵌入到zval中的\code{zend\_string}
+
+\begin{itemize}
+        \item Z\_STRVAL()
+        \item Z\_STRLEN()
+        \item Z\_STRHASH()
+        \item ...
+\end{itemize}
+
+其他存在的一些你可能用不到。
+
+\subsubsection{PHP的历史和经典的C字符串}
+
+简单介绍一下经典的C字符串。在C语言中，字符串是字符数组(char foo[])或者是指向字符的指针(char *)。他们对自己的长度一无所知,这就是以NUL终止的原因(知道字符串的开始和结束，你就知道了它的长度)。
+
+在PHP 7之前，\code{zend\_string}结构根本不存在。老版本使用了传统的char * / int 对。 你仍然可以在PHP源代码中找到很少的地方，还在使用char */ int 对而不是\code{zend\_string}。 你还可以找到API工具，在\code{zend\_string}和char * / int 对之间进行交互。
+
+尽可能：使用\code{zend\_string}。 一些罕见的地方没有使用\code{zend\_string}，因为在那个地方使用它们是无关紧要的，但是你会在PHP源代码中找很多对\code{zend\_string}的引用。
+
+\subsubsection{Interned zend\_string}
+
+在这里简单介绍一下interned字符串。在扩展开发中，您应该很少会需要这样的概念。Interned字符串还与OPCache扩展有交互。
+
+Interned字符串是重复数据删除的字符串. 当使用OPCache时，它们从一个请求到另一个请求还会被重复使用。
+
+假设您要创建字符串“foo”。 你倾向于做的只是创建一个新的字符串“foo”：
+
+\begin{lstlisting}[language=c]
+zend_string *foo;
+foo = zend_string_init("foo", strlen("foo"), 0);
+
+/* ... */
+\end{lstlisting} 
+
+但是问题来了：那部分字符串是不是在你使用之前就已经创建完成？当您需要一个字符串时，你的代码会在PHP生命中的某个时刻执行，这意味着在您之前发生的一些代码可能需要完全相同的字符串(以“foo”为例)。
+
+interned字符串是关于要求引擎探测interned字符串储存区，如果它可以找到你的字符串，就可以重用已分配的指针。如果不存在：创建一个新的字符串并且“intern”它，这使得它可以用于PHP源代码的其他部分(其他扩展、引擎本身等等)。
+
+
+下面是一个例子:
+
+\begin{lstlisting}[language=c]
+
+        zend_string *foo;
+        foo = zend_string_init("foo", strlen("foo"), 0);
+
+        foo = zend_new_interned_string(foo);
+
+        php_printf("This string is interned : %s", ZSTR_VAL(foo));
+
+        zend_string_release(foo);
+        
+\end{lstlisting}
+
+
+在上面的代码中，我们创建了一个非常经典的\code{zend\_string}。然后，我们将创建的\code{zend\_string}传递给\code{zend\_new\_interned\_string()}。这个函数在引擎内的interned字符串缓冲区中寻找相同的字符串(这里是“foo”)。如果找到了它(意味着有人已经创建了这个字符串)，那么它将释放您的字符串(可能释放它)，并将用来自interned字符串缓冲区的字符串替换它。如果没有查到它：会将它添加到interned字符串缓冲区中，因此可供将来使用或PHP的其他部分使用。
+
+你必须注意内存分配。interned字符总是将refcount设置为1，因为他们不需要被计数，因为它们将与interned字符串缓冲区共享，因此不能被销毁。
+
+例：
+
+\begin{lstlisting}[language=c]
+
+        zend_string *foo, *foo2;
+
+        foo  = zend_string_init("foo", strlen("foo"), 0);
+        foo2 = zend_string_copy(foo); /* increments refcount of foo */
+
+        /* refcount falls back to 1, even if the string is now
+        * used at three different places */
+        foo = zend_new_interned_string(foo);
+
+        /* This doesn't do anything, as foo is interned */
+        zend_string_release(foo);
+
+        /* This doesn't do anything, as foo2 is interned */
+        zend_string_release(foo2);
+
+        /* At the end of the process, PHP will purge its interned
+        string buffer, and thus free() our "foo" string itself */
+\end{lstlisting}
+
+这都是关于垃圾回收的。
+
+当一个字符串是interned时，它的GC标志通过添加\code{IS\_STR\_INTERNED}标志来改变，无论他们使用什么内存分配类（永久的或基于请求的）。当你想复制或者释放一个字符串时会查询这个标志。如果这个字符串是interned，引擎在复制字符串时不会增加它的refcount。但是如果你释放（release）字符串时，它也不会减少或者释放（free）它。它什么也不会做。在进程生命周期结束时，它将销毁其interned字符串缓冲区，并释放interned字符串。
+
+实际上，如果OPCache启动，这个过程会比这个要复杂一点。OPCache扩展改变了interned字符串的使用方式。在没有OPCache的情况下，如果您在请求的过程中创建了一个interned \code{zend\_string}，那么该字符串将在当前请求的末尾被清除，并且不会被下一次请求重用。但是，如果您使用OPCache，那么interned字符串将存储在一个共享内存段中，并在同一个池中的每个PHP进程之间共享。此外，interned字符串会跨多个请求重用。
+
+interned字符串可以节省内存，因为相同的字符串在内存中存储的次数不会超过一次。当时它可能会耗一些CPU时间，因为它经常需要查找interned字符串存储，即使该进程已经过优化。作为扩展开发者，以下是全局规则：
+
+\begin{itemize}
+        \item 如果使用OPCache（应该是这样），并且如果您需要创建请求绑定的只读字符串：使用interned字符串
+        \item 如果您需要一个字符串，您确信知道PHP已经interned的字符串（一个众所周知的PHP字符串，例如“php”或者“str\_replace”），请使用一个interned字符串
+        \item 如果字符串不是只读的，并且在创建字符串后可以/应该进行更改，则不要使用interned字符串
+        \item 如果将来不太可能重用该字符串，则不要使用interned字符串
+\end{itemize}
+
+Interned字符串的详细介绍在\href{https://github.com/php/php-src/blob/PHP-7.0/Zend/zend_string.c}{Zend/zend\_string.c}
+
+
+\section{smart\_str API}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -1,0 +1,21 @@
+\begin{appendices}
+\chapter{附录}
+\section{常用宏及函数}
+
+\begin{itemize}
+    \item \code{zend\_string\_init}     创建zend\_string
+    \item \code{zend\_string\_copy}     字符串复制(只增加引用计数)  
+    \item \code{zend\_string\_dup}      字符串拷贝(发生内存分配)
+\end{itemize}
+
+\begin{lstlisting}[language=c]
+    //创建zend_string
+    zend_string *zend_string_init(const char *str, size_t len, int persistent); 
+
+    //字符串复制(只增加引用计数)
+    zend_string *zend_string_copy(zend_string *s);
+
+    //字符串拷贝(发生内存分配)
+    zend_string *zend_string_dup(zend_string *s, int persistent);
+\end{lstlisting}  
+\end{appendices}  
