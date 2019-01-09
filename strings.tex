@@ -313,20 +313,96 @@ Interned字符串的详细介绍在\href{https://github.com/php/php-src/blob/PHP
 
 \section{smart\_str API}
 
+这看起来可能很奇怪，C语言几乎没有提供任何字符串处理功能(构建、连接、收缩、展开、转换等等)。C是一种低级通用语言，可用于构建API以处理更具体的任务，例如字符串构造。
+
+\alertinfo{显然，你们都知道我们讨论的是ASCII字符串，也就是字节。而不是Unicode。}
+
+PHP的`smart\_str` API 可以帮助你构建字符串特别是将字节块连接为字符串。这些API位于:\href{http://www.phpinternalsbook.com/php7/internal_types/strings/printing_functions.html}{PHP’s special printf() APIs} 和\href{http://www.phpinternalsbook.com/php7/internal_types/strings/zend_strings.html}{zend\_string} 用来帮助字符串管理。
+
+\subsection{smart\_str VS smart\_string}
+
+下面是两种结构体：
+
+\begin{lstlisting}[language=c]
+
+    typedef struct {
+        char *c;
+        size_t len;
+        size_t a;
+    } smart_string;
+
+    typedef struct {
+        zend_string *s;
+        size_t a;
+    } smart_str;
+
+\end{lstlisting}
 
 
+如您所见，一个将使用传统的C字符串(如\code{char*/size\_t})，另一个将使用PHP的特定\code{zend\_string}结构。
+
+我们将详细说明后者：\code{smart\_str},它与\href{http://www.phpinternalsbook.com/php7/internal_types/strings/zend_strings.html}{zend\_strings}一起使用。这两个API完全相同，只需注意一个（我们将在这里详述的那个）由\code{smart\_str\_**()}开头，另一个由\code{smart\_string\_***()}开头。不要混淆！
+
+\code{smart\_str} API详细介绍在\href{https://github.com/php/php-src/blob/509f5097ab0b578adc311c720afcea8de266aadd/Zend/zend_smart_str.h}{Zend/zend\_smart\_str.h}（也是 .c 文件）。
+
+\alertwarning{不要将\code{smart\_str}与\code{smart\_string}混淆。}
+
+\subsection{基本API使用}
+
+到目前为止，这个API非常容易管理。
+
+您在堆栈分配一个\code{smart\_str}，并将其指针传递给\code{smart\_str\_***()}API函数，它为您管理内含的\code{zend\_string}。 你构建你的字符串，使用它，然后释放它。里面没什么强大的东西，对吗？
+
+内含的\code{zend\_string}将要\href{http://www.phpinternalsbook.com/php7/memory_management/zend_memory_manager.html}{被永久的或者请求绑定}的分配，这取决于您将使用的最后一个扩展API参数:
+
+\begin{lstlisting}[language=c]
+        smart_str my_str = {0};
+
+        smart_str_appends(&my_str, "Hello, you are using PHP version ");
+        smart_str_appends(&my_str, PHP_VERSION);
+
+        smart_str_appendc(&my_str, '\n');
+
+        smart_str_appends(&my_str, "You are using ");
+        smart_str_append_unsigned(&my_str, zend_hash_num_elements(CG(function_table)));
+        smart_str_appends(&my_str, " PHP functions");
+
+        smart_str_0(&my_str);
+
+        /* Use my_str now */
+        PHPWRITE(ZSTR_VAL(my_str.s), ZSTR_LEN(my_str.s));
+
+        /* Don't forget to release/free it */
+        smart_str_free(&my_str);
+
+\end{lstlisting}  
 
 
+我们在这里使用了简单的API，扩展以\code{\_ex()}为结尾，允许你选择\keyword{zend\_string}是持久或者是请求绑定时分配。例如：
+
+\begin{lstlisting}[language=c]
+        smart_str my_str = {0};
+
+        smart_str_appends_ex(&my_str, "Hello world", 1); /* 1 means persistent allocation */
+\end{lstlisting} 
+
+然后，根据你想要追加的内容，你需要调用正确的API。如果你追加一个经典的C字符串，你可以使用\code{smart\_str\_appends(smart\_str *dst, const char *src)}。如果你追加二进制字符串并且知道它的长度，你可以使用\code{smart\_str\_appendl(smart\_str *dst, const char *src, size\_t len)}。
+
+\code{smart\_str\_append(smart\_str *dest, const zend\_string *src)}只是讲\code{zend\_string} 追加到\code{smart\_str}。如果你想追加其他的\code{smart\_str},使用\code{smart\_str\_append\_smart\_str(smart\_str *dst, const smart\_str *src)}来合并它们。
+
+\subsection{smart\_str特定技巧}
+
+\begin{itemize}
+        \item 永远不要忘记通过调用\code{smart\_str\_0()}来完成你的字符串。此操作会在内含的字符串末尾追加一个NUL字符，会使其用libc字符串函数兼容
+        \item 永远不要忘记在使用完成字符串后通过\code{smart\_str\_free()}来释放(free)。
+        \item \code{smart\_str}内含一个\code{zend\_string},允许你通过使用其reference计数在后面的其他地方共享它。请访问\href{http://www.phpinternalsbook.com/php7/internal_types/strings/zend_strings.html}{zend\_string专用章节}了解更多信息。
+        \item 你可以考虑一下\code{smart\_str}分配。了解一下\code{smart\_str\_alloc()} 系列。
+        \item \code{smart\_str}被大量的用于PHP的核心代码。例如：PHP的特定函数\href{http://www.phpinternalsbook.com/php7/internal_types/strings/printing_functions.html}{printf()}在内部使用了\code{smart\_str}缓冲区。
+        \item \code{smart\_str}绝对是一个您需要掌握的简单结构。
+\end{itemize}  
 
 
-
-
-
-
-
-
-
-
+\section{PHP自定义的printf函数}
 
 
 
