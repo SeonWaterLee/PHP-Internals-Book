@@ -1,4 +1,4 @@
-\documentclass[UTF8]{ctexbook}                                           % Book class in 11 points  
+\documentclass[UTF8,oneside]{ctexbook}                                           % Book class in 11 points  
 \usepackage{geometry}                                                    % Cus­tomize page lay­out
 \usepackage{xeCJK}
 \usepackage{hyperref}
@@ -9,10 +9,11 @@
 \usepackage{fancyhdr}
 \usepackage{listings}
 \usepackage{appendix}
+\usepackage{titlepic}
 
 \XeTeXlinebreaklocale "zh"                                                 % 针对中文进行断行
 \setmainfont{Times New Roman}  
-
+\graphicspath{ {images/} }
 \geometry{
     margin=1cm,
     marginparsep = 0.5cm,

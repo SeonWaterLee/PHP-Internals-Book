@@ -1,13 +1,8 @@
 all: pdf
 
 clean:
-	rm -f *.aux
-	rm -f *.pdf
-	rm -f *.log
-	rm -f *.out
-	rm -f *.toc
-	rm -f *.gz
-
+	find . -type f -name "*.aux" -or -name "*.pdf" -or -name "*.log" -or -name "*.out" -or -name "*.toc" -or -name "*.gz" | xargs rm -rf
+	
 pdf: *.tex
 	xelatex internals.tex 
 

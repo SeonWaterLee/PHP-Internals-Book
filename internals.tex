@@ -3,16 +3,21 @@
 \title{\bf PHP Internals Book}                                              % Supply information
 \author{Julien Pauli \and Nikita Popov \and Anthony Ferrara}                % for the title page.
 \date{\today}                                                               % Use current date. 
+
 \begin{document}
+\input{titlepage}
+
 \frontmatter                                                                % End of preamble, start of text.
-\maketitle
+
 \tableofcontents
 
 \mainmatter
-\include{introduction}
-\include{php_build_system}
-\include{internal_types}
-\include{strings}
-\include{appendix}
+
+\include{chapters/introduction}
+\include{chapters/php_build_system}
+\include{chapters/internal_types}
+\include{chapters/strings}
+\include{chapters/appendix}
+
 \end{document}                                                              % The required last line
 
