@@ -404,42 +404,139 @@ PHP的`smart\_str` API 可以帮助你构建字符串特别是将字节块连接
 
 \section{PHP自定义的printf函数}
 
+你们都知道libc的\code{printf()}及其相关函数。本章将详细介绍PHP声明和使用的许多克隆，它们的目标是什么，为什么使用它们以及何时使用它们。
+
+\alertinfo{关于\code{printf()}以及相关函数的Libc文档在\href{https://www.gnu.org/software/libc/manual/html_node/Formatted-Output-Functions.html}{这里}}
 
 
+您知道这些函数很有用, 但有时没有提供足够的功能。此外你知道向\code{printf()}相关函数添加格式化字符串是不容易的，不可移植的，并且有安全风险。
+
+PHP添加了自己的类printf函数来替代libc的函数，并被内部开发人员使用。他们主要添加了新格式，并用\code{zend\_string}代替 char *等等，让我们一起来看一下。
+
+\alertwarning{您必须掌握libc \code{printf()}的默认格式。 请阅读\href{http://www.cplusplus.com/reference/cstdio/printf/}{这个文档}}
+
+\alertinfo{添加这些函数是为了替换libc函数，这意味着例如如果你使用\code{sprintf(),}这不会调用libc的\code{sprintf()},而会调用php的替代函数。除了常用的\code{printf()}之外,其他的函数都被替换了。}
+
+\subsection{传统用法}
+
+首先，您不应该使用\code{sprintf()}，因为该函数不执行任何检查，并且容许许多缓冲区溢出错误的出现。请尽量避免使用它。
+
+\alertwarning{请尽量避免使用\code{sprintf()}。}
+
+然后，你有一些选择。
+
+\subsection{已知缓存大小}
+
+如果您知道缓存的大小，可以使用\code{snprintf()}或\code{slprintf()}来完成这项工作。这些函数的返回值不同，但是功能是相同的。
+
+他们都根据传入的格式进行打印，并且总是以NUL字符'\\0'为结尾。然而\code{snprintf()}返回传入的字符数，而\code{slprintf()}返回有效使用的字符数。这因此能够检测缓存区太小和字符串截断。这个是不包括最后的'\\0'。
 
 
+下面是一个例子，可以让你充分理解:
+
+\begin{lstlisting}[language=c]
+        char foo[8];                            /* 8-char large buffer */
+        const char str[] = "Hello world";       /* 12 chars including \0 in count */
+        int r;
+
+        r = snprintf(foo, sizeof(foo), "%s", str);
+        /* r = 11 here even if only 7 printable chars were written in foo */
+
+        /* foo value is now 'H' 'e' 'l' 'l' 'o' ' ' 'w' '\0' */
+\end{lstlisting}  
 
 
+对使用\code{snprintf()}来说，它不是一个很好的函数，因为它不允许检测最终的字符串截断。从上面的例子中你可以很明显的看出，"Hello world\\0"不能被容纳到8字节的缓存中。但是\code{snprintf()}仍然返回11，也就是\code{strlen("Hello world\\0")}的值。所以你无法检测到字符串被截断了。
+
+下面是\code{slprintf()}:
+
+\begin{lstlisting}[language=c]
+
+        char foo[8];                            /* 8-char large buffer */
+        const char str[] = "Hello world";       /* 12 chars including \0 in count */
+        int r;
+        
+        r = slprintf(foo, sizeof(foo), "%s", str);
+        /* r = 7 here , because 7 printable chars were written in foo */
+        
+        /* foo value is now 'H' 'e' 'l' 'l' 'o' ' ' 'w' '\0' */
+
+\end{lstlisting}         
 
 
+对于\code{slprintf()}, \keyword{foo}的结果缓存中包含完全相同的字符串，但是现在的返回值为7。7小于"Hello world"字符串的11字符，因此你可以发现它被截断了：
+
+\begin{lstlisting}[language=c]
+
+        if (slprintf(foo, sizeof(foo), "%s", str) < strlen(str)) {
+                /* A string truncation occurred */
+        }
+
+\end{lstlisting} 
+
+记住：
+
+\begin{itemize}
+        \item 字符串无论是否截断，这两个函数总是以NUL终止。结果字符串是安全的C字符串。
+        \item 只有\code{slprintf()}允许检测字符串截断。
+\end{itemize}  
 
 
+这两个函数定义在\href{https://github.com/php/php-src/blob/648be8600ff89e1b0e4a4ad25cebad42b53bed6d/main/snprintf.c}{main/snprintf.c}
 
 
+\subsection{缓存大小未知}
+
+现在如果你不知道结果缓存的大小，那么你需要一个动态分配的缓存，然后你使用\code{spprintf()}。记住，你必须自己释放缓存!
+
+下面是个例子：
+
+\begin{lstlisting}[language=c]
+
+        #include <time.h>
+
+        char *result;
+        int r;
+        
+        time_t timestamp = time(NULL);
+        
+        r = spprintf(&result, 0, "Here is the date: %s", asctime(localtime(&timestamp)));
+        
+        /* now use result that contains something like "Here is the date: Thu Jun 15 19:12:51 2017\n" */
+        
+        efree(result);  
+
+\end{lstlisting} 
 
 
+\code{spprintf()}返回已被打印到结果缓存里的字符数，不包括最后‘\\0’。因此你知道为你分配的字节数(减掉1)。
 
+请注意，是使用ZendMM完成分配的（请求分配），因此应该作为请求的一部分使用并且使用\code{efree()}而不是\code{free()}来释放缓存。
 
+\alertinfo{关于\href{http://www.phpinternalsbook.com/php7/memory_management/zend_memory_manager.html}{Zend内存管理器}(ZendMM)的一章详细介绍了如何通过PHP动态分配内存。}
 
+如果你想要限制缓存的大小，可以将此限制值作为函数的第二个参数传入，如果你传0，则表示没有限制：
 
+\begin{lstlisting}[language=c]
+        #include <time.h>
 
+        char *result;
+        int r;
 
+        time_t timestamp = time(NULL);
 
+        /* Do not print more than 10 bytes || allocate more than 11 bytes */
+        r = spprintf(&result, 10, "Here is the date: %s", asctime(localtime(&timestamp)));
 
+        /* r == 10 here, and 11 bytes were allocated into result */
 
+        efree(result);
+\end{lstlisting}        
 
+\alertinfo{尽可能不要使用动态内存分配，这会影响性能。如果你可以选择，使用静态堆栈分配缓存。}
 
+\code{spprintf()}定义在\href{https://github.com/php/php-src/blob/648be8600ff89e1b0e4a4ad25cebad42b53bed6d/main/spprintf.c}{main/spprintf.c}。
 
-
-
-
-
-
-
-
-
-
-
-
+\subsection{printf()怎么样}
 
 

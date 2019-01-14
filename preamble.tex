@@ -1,4 +1,4 @@
-\documentclass[UTF8,oneside]{ctexbook}                                           % Book class in 11 points  
+\documentclass[UTF8,oneside]{ctexbook}                                   % Book class in 11 points  
 \usepackage{geometry}                                                    % Cus­tomize page lay­out
 \usepackage{xeCJK}
 \usepackage{hyperref}
@@ -9,19 +9,18 @@
 \usepackage{fancyhdr}
 \usepackage{listings}
 \usepackage{appendix}
-\usepackage{titlepic}
 
 \XeTeXlinebreaklocale "zh"                                                 % 针对中文进行断行
 \setmainfont{Times New Roman}  
 \graphicspath{ {images/} }
 \geometry{
     margin=1cm,
-    marginparsep = 0.5cm,
+    marginparsep=0.5cm,
     marginparwidth=1cm,
-    top = 2.5cm,
-    bottom = 2cm,
-    outer = 2.0cm,
-    inner = 2.0cm
+    top=2.5cm,
+    bottom=2cm,
+    outer=2.0cm,
+    inner=2.0cm
 }                                                                           %设置页面
 
 \hypersetup{
@@ -60,7 +59,6 @@
   tabsize=2
 }                                                                           % Code listing style named "default_style"
 
-
 \lstdefinelanguage{shell}{
     morekeywords={git, php, cd, for, if, else, then, fi, echo, case, in,
       elif, esac, for, do, done, tar, while, until, shift, configure,
@@ -74,9 +72,10 @@
 }
 
 \lstset{style=custom_shell}
-\parindent0pt                                                               % 段落缩进距离  
-\parskip10pt                                                                % 段落间的距离
-\raggedright                                                                % Do not right justify
+
+\parindent 0pt                                                              % 段落缩进距离  
+\parskip 10pt                                                               % 段落间的距离
+\raggedright                                                                % 段落左对齐
 \pagestyle{fancy}                                                           % 页眉和页脚
 
 \newcommand{\keyword}[1]{\textbf{#1}}
