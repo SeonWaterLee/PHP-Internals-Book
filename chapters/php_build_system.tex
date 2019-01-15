@@ -4,6 +4,8 @@
 
 \section{构建php}
 
+\label{sec:building_php}
+
 本章将说明如何在某种程度上适用于扩展开发或者内核修改的方式编译PHP。我们只包括基于类Unix系统的构建。
 
 如果您希望在Windows上构建PHP，您应该查看\href{https://wiki.php.net/internals/windows/stepbystepbuild}{PHP Wiki}中一步一步的构建说明[1]。
@@ -409,6 +411,8 @@ Don't forget to run 'make test'
 PHP提供的最后一个清理脚本是\keyword{./vcsclean}, 这个仅适用你是通过git获取源码的情况下。它实际上就是对\code{git clean -X -f -d}的调用，它将删除git忽略的所有未跟踪的文件和目录。你应该小心使用这个。
 
 \section{构建PHP扩展}
+
+\label{sec:building_extensions}
 
 既然你已经知道了如何编译PHP自身，我们将要继续编译其他扩展。我们将要讨论构建过程是如何工作的以及有哪些不同的选项可用。
 

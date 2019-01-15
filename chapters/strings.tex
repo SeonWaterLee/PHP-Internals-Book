@@ -537,6 +537,49 @@ PHP添加了自己的类printf函数来替代libc的函数，并被内部开发�
 
 \code{spprintf()}定义在\href{https://github.com/php/php-src/blob/648be8600ff89e1b0e4a4ad25cebad42b53bed6d/main/spprintf.c}{main/spprintf.c}。
 
-\subsection{printf()怎么样}
+\subsection{printf()}
+
+你需要使用\code{printf()},也就是格式化输出到输出流，请使用\code{php\_printf()}。该函数内部使用\code{spprintf()}，因此执行动态分配，在将其发送到SAPI输出流，也就是CLI模式下的stdout或者其他SAPI的输出缓存区(例如：CGI缓冲区)后释放自己。
+
+\subsection{特殊的PHP printf格式}
+
+记住PHP使用了自己设计的函数替代了大多数libc的\code{printf()}函数。你可以看一下参数解析API，通过阅读\href{https://github.com/php/php-src/blob/509f5097ab0b578adc311c720afcea8de266aadd/main/spprintf.c#L203}{源码}你可以很容易理解。
+
+这意味着参数解析算法已经被完全重新，并且可能与你使用的libc习惯不一样。例如：在大多数情况下，libc本地化处理的不好。你还可以使用一些特殊格式，例如：“\%I64”显式打印int64,或者"\%I32"。还可以使用“\%Z”打印zval（根据PHP转换规则转为字符串），这是一个很好的补充。
+
+格式化程序还将识别无限大的数字，并打印为“INF”，或非数字表示为“NAN”。
+
+如果你犯了一个错误，并要求格式化输出一个NULL指针，libc肯定会崩溃，PHP将返回“(NULL)”字符串。
+
+\alertinfo{如果你在printf中看到一个神奇的“(null)”出现，这意味着你向PHP printf系列函数传递了一个空指针。}
+
+\subsection{Printf()ing into zend\_strings}
+
+由于\hyperref[sec:zend_string]{zend\_string}是PHP源代码中非常常见的结构，因此您可能需要将\code{printf()}转换为\code{zend\_string}而不是传统的C \code{char *}。 为此，请使用\code{strpprintf()}。
+
+API是\code{zend\_string *strpprintf(size\_t max\_len, const char *format, ...)},其返回值是\code{zend\_string},而不是你所期望的打印字符的数量。你可以使用第一个参数(传0表示无限的)来限制这个数字;你必须记住，\code{zend\_string}将使用Zend内存管理器分配，从而绑定到当前请求。
+
+显然，format API与上面看到的API是共通的。
+
+这里有一个简单的例子:
+
+\begin{lstlisting}[language=c]
+
+        zend_string *result;
+
+        result = strpprintf(0, "You are using PHP %s", PHP_VERSION);
+        
+        /* Do something with result */
+        
+        zend_string_release(result); 
+
+\end{lstlisting}     
+
+
+\subsection{zend\_ API的说明}
+
+您可能会遇到\code{zend\_spprintf()}或\code{zend\_strpprintf()}函数。这些与上面看到函数的完全相同。
+
+它们只是Zend引擎和PHP核心之间分离的一部分，这个细节对我们来说并不重要，在源代码中，所有内容都混合在一起。
 
 
