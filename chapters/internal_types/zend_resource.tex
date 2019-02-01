@@ -1,0 +1,134 @@
+\section{资源类型:zend\_resource}
+\label{sec:zend_resource}
+
+实际上尽管PHP已经可以丢弃“资源”类型，因为自定义对象存储允许构建任何抽象类型的数据，在当前PHP版本中仍然存在资源类型，你还是可能需要处理它。
+
+如果你需要创建资源，我们希望您不要这样做，而是使用对象和自定义对象存储处理。对象（Objects）是PHP的一种类型，它可以嵌入任何类型的任何内容。然而因为历史原因，PHP仍然要知道这种特殊类型的“资源” ，并且在其核心代码或者一些扩展中仍然在使用它。我们一起了解一下这种类型。但是要注意，它确实很神秘并且历史悠久，所以不要对它的设计感到惊讶，特别是在阅读有关它的源码时。
+
+\subsection{什么是“资源”类型？}
+
+你很容易就知道了。我们正在讨论这个:
+
+\begin{lstlisting}[language=php]
+$fp = fopen('/proc/cpuinfo', 'r');
+var_dump($fp); /* resource(2) of type (stream) */
+\end{lstlisting}
+
+在内部，资源被绑定到\code{zend\_resource}结构类型:
+
+\begin{lstlisting}[language=c]
+struct _zend_resource {
+        zend_refcounted_h gc;
+        int               handle;
+        int               type;
+        void             *ptr;
+};
+\end{lstlisting}
+
+我们发现了通用的\code{zend\_refcounted\_h}头，这意味这资源是可引用的。\code{handle}是整数类型,它在引擎内部被用来将资源定位到内部资源表中。它被用作此类表的键。
+
+\code{type}被用来将相同类型的资源重组在一起。这是关于资源被销毁的方式以及如何从它们的handle中取回。
+
+最后，在\code{zend\_resource}的\code{ptr}字段是你的抽象数据。请记住，资源是关于存储一个抽象数据的，它不能适合PHP原生的任何数据类型（但是对象可以，就像我们之前说的那样）。
+
+\subsection{资源类型和资源销毁}
+
+资源必须注册析构函数。当用户在PHP用户层使用资源时，当它们不再使用过这些资源时，它们也不会费心清理它们。例如：看见\code{fopen()}调用但是没有看到对应的\code{fclose()}调用是不稀罕的。使用C语言，这充其量是个坏主意，至多也就是一场灾难。但是使用像PHP这样的高级语言，事情就容易多了。
+
+作为内部开发人员，你必须面对这样一个事实：用户将会创建许多你运行它们使用的资源，而且没有正确的清理它们并释放内存/系统资源。因此你必须一个析构函数，该析构函数将在引擎即将销毁该类型的资源时被调用。
+
+析构函数是按照类型分组的，资源也是这样。你不能请求“dtabase”类型资源的析构函数来来处理"file"类型的资源。
+
+还有两种资源，它们的生命周期是不同的。
+
+\begin{itemize}
+        \item  经典资源，最常用的一种，不会跨多个请求存留，它们的析构函数会在请求关闭时被调用。
+        \item 持久性资源将持续存在于多个请求中，并且只有在PHP进程终止时才会被销毁。
+\end{itemize}
+
+
+\alertinfo{你可能会对\href{http://www.phpinternalsbook.com/php7/extensions_design/php_lifecycle.html}{PHP生命周期}这一章感兴趣，该章节展示了在PHP的流程生命周期内发生的不同步骤。此外，\href{http://www.phpinternalsbook.com/php7/memory_management/zend_memory_manager.html}{Zend Memory Manager}章节可能有助于理解持久性和请求绑定内存分配的概念。}
+
+\subsection{使用资源}
+
+与资源相关的API可以在\href{https://github.com/php/php-src/blob/3704947696fe0ee93e025fa85621d297ac7a1e4d/Zend/zend_list.c}{zend/zend\_list.c}中查到。您可能会发现其中有一些不一致的地方，比如讨论“资源”的“列表”时。
+
+\subsubsection{创建资源}
+
+要创建资源，首先必须要为它注册析构函数，并使用\code{zend\_register\_list\_destructors\_ex()}将其关联到一个资源类型名称。此函数将返回一个表示你注册的资源类型的整数。该调用将返回一个整数，该整数表示您注册的资源类型。你必须记住该整数，因为你稍后需要从它那里获取资源。
+
+然后，可以使用\code{zend\_register\_resource()}注册一个新的资源。它将会返回一个\code{zend\_resource}。让我们一起看一个简单的例子：
+
+\begin{lstlisting}[language=c]
+        #include <stdio.h>
+
+        int res_num;
+        FILE *fp;
+        zend_resource *my_res;
+        zval my_val;
+        
+        static void my_res_dtor(zend_resource *rsrc)
+        {
+            fclose((FILE *)rsrc->ptr);
+        }
+        
+        /* module_number should be your PHP extension number here */
+        res_num = zend_register_list_destructors_ex(my_res_dtor, NULL, "my_res", module_number);
+        fp      = fopen("/proc/cpuinfo", "r");
+        my_res  = zend_register_resource((void *)fp, res_num);
+        
+        ZVAL_RES(&my_val, my_res); 
+\end{lstlisting}
+
+在上面的代码中，我们使用libc的\code{fopen()}打开了一个文件，并将返回的指针存储到一个资源中。在此之前，我们注册了一个析构函数，当他被调用时它会调用libc's的\code{fclose()}。然后，我们将资源注册到引擎上，并将资源传递到一个\code{zval}容器中，它可以在用户层获取到。
+
+\alertinfo{Zvals章节在\hyperref[sec:zvals]{这里}}
+
+资源类型必须要记住。在这里我们注册了一个类型为“my\_res“的资源。这是类型的名称。引擎实际上并不关注类型名称，而是类型标识符，即\code{zend\_register\_list\_destructors\_ex()}返回的整数。你应该在某处记下它，就像我们使用\code{res\_num}变量那样。
+
+\subsubsection{获取资源}
+现在我们已经注册了一个资源并将其放入\code{zval}中作为实例，我们应该学习如何从用户层获取该资源。记住，该资源存储在\code{zval}中。资源结构中存储了资源类型编号（在type字段中）。
+因此，从用户层面获取资源，我们必须从\code{zval}中提取\code{zend\_resource},并调用\code{zend\_fetch\_resource()}来获取我们的\code{FILE * }指针：
+
+\begin{lstlisting}[language=c]
+        /* ... later on ... */
+
+        zval *user_zval = /* fetch zval from userland, assume type IS_RESOURCE */
+
+        ZEND_ASSERT(Z_TYPE_P(user_zval) == IS_RESOURCE); /* just a check to be sure */
+
+        fp = (FILE *)zend_fetch_resource(Z_RESVAL_P(user_zval), "my_res", res_num);
+\end{lstlisting}        
+
+如前所述: 从用户层面获取一个\code{zval}(类型为IS\_RESOURCE)，并痛殴调用\code{，并通过调用zend\_fetch\_resource()}获取资源指针。
+
+该函数将检查资源的类型是否与作为第三个参数传递的类型相同（这里是\code{res\_num}）。如果相同，它将返回你需要的\code{void *}资源指针，我们就完成了。如果不同，那么它会抛出一个类似于“supplied resource is not a valid {type name} resource”的警告。这种情况就会发生，例如，你期望得到一个“my\_res"类型的资源，但是你得到了一个资料类型为“gzip”的\code{zval}，例如PHP函数 \code{gzopen()}返回的那样，那么就会发生这种情况。
+
+资源类型只是引擎将不同类型的资源(类型为“file”、“gzip”甚至“mysql connection”)混合到同一个资源表中的一种方法。资源类型有名称，因此可以在错误消息或调试语句中使用这些名称(比如\code{var\_dump(\$my\_resource)})，并且它们还被表示为一个整数，用于在内部从资源类型中取回资源指针，并注册一个析构函数。
+
+\alertinfo{如您所见，如果我们使用对象，它们自身就表示类型，并且不需要从它的标识符获取资源来验证它的类型。对象是自描述类型。但是对于当前的PHP版本，资源仍然是有效的数据类型}
+
+\subsection{资源引用计数}
+
+与许多其他类型一样，\code{zend\_resource}也是引用计数的。我们可以看到它的\code{zend\_refcounted\_h}头。如果你需要的话(一般来说你不应该真的需要它)，可以使用引用计数的API:
+
+\begin{itemize}
+        \item \code{zend\_list\_delete(zend\_resource *res)} 递减引用计数，如果为零可销毁资源
+        \item \code{zend\_list\_free(zend\_resource *res)} 检查refcount是否为零，如果是则销毁资源。
+        \item \code{zend\_list\_close(zend\_resource *res)} 在任何条件下调用资源析构函数
+\end{itemize}
+
+
+\subsection{持久化资源}
+
+持久化资源在请求结束时不会被销毁。经典用例是持久化数据库连接。这些连接是在请求之间循环使用的。传统上，您不应该使用持久化资源，因为每个请求都是不同的。在这样做之前，重用相同的资源确实需要深思熟虑。
+
+要注册持久化资源，请使用持久析构函数而不是经典析构函数。这是在\code{zend\_register\_list\_destructors\_ex()}调用时完成的，该API类似于:
+
+\begin{lstlisting}[language=c]
+        zend_register_list_destructors_ex(rsrc_dtor_func_t destructor, rsrc_dtor_func_t persistent_destructor,
+        const char *type_name, int module_number);     
+\end{lstlisting} 
+
+
+
